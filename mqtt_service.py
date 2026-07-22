@@ -19,6 +19,7 @@ except ImportError as exc:
 # logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 MAX_MESHTASTIC_PAYLOAD_BYTES = mesh_pb2.Constants.DATA_PAYLOAD_LEN
+RECONNECT_FAILURE_LOG_INTERVAL_SECONDS = 30
 
 class MqttServiceError(RuntimeError):
     """Raised when the MQTT service cannot start or publish a message."""
@@ -52,8 +53,10 @@ class MqttService:
         
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.on_connect = self.on_connect
+        self.client.on_connect_fail = self.on_connect_fail
         self.client.on_message = self.on_message
         self.client.on_disconnect = self.on_disconnect
+        self.client.reconnect_delay_set(min_delay=1, max_delay=30)
 
         self.global_message_id = random.randint(1, 0xFFFFFFFF)
         self._message_id_lock = threading.Lock()
@@ -61,29 +64,56 @@ class MqttService:
         self._connect_error = None
         self._node_info_timer = None
         self._stopping = False
+        self._has_connected_once = False
+        self._mqtt_connected = False
+        self._last_reconnect_failure_log = 0.0
 
     def set_telegram_callback(self, callback):
         self.telegram_callback = callback
 
     def on_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code == 0:
-            logger.info(f"Connected to MQTT broker: {self.broker}")
-            logger.info(f"Subscribing to topic: {self.subscribe_topic}")
+            if self._has_connected_once:
+                logger.info("MQTT 已重新連線：%s:%s", self.broker, self.port)
+            else:
+                logger.info("MQTT 連線成功：%s:%s", self.broker, self.port)
+            self._has_connected_once = True
+            self._mqtt_connected = True
+            self._last_reconnect_failure_log = 0.0
+            self._connect_error = None
+            logger.info("正在訂閱 MQTT 主題：%s", self.subscribe_topic)
             result, _ = client.subscribe(self.subscribe_topic)
             if result != mqtt.MQTT_ERR_SUCCESS:
                 self._connect_error = f"failed to subscribe to {self.subscribe_topic}: MQTT error {result}"
+                logger.error("MQTT 主題訂閱失敗：錯誤代碼 %s", result)
             # Broadcast our NodeInfo after a short delay
             self._node_info_timer = threading.Timer(2.0, self._send_node_info)
             self._node_info_timer.daemon = True
             self._node_info_timer.start()
         else:
+            self._mqtt_connected = False
             self._connect_error = f"broker rejected connection: {reason_code}"
-            logger.error("Failed to connect to MQTT, reason code: %s", reason_code)
+            logger.error("MQTT 連線遭 Broker 拒絕：%s", reason_code)
         self._connect_event.set()
 
     def on_disconnect(self, client, userdata, flags, reason_code, properties):
+        was_connected = self._mqtt_connected
+        self._mqtt_connected = False
         if not self._stopping:
-            logger.warning(f"Disconnected from MQTT broker, reason code: {reason_code}. Will attempt to reconnect.")
+            if was_connected:
+                logger.warning(
+                    "MQTT 連線中斷：%s；程式將自動嘗試重新連線。", reason_code
+                )
+
+    def on_connect_fail(self, client, userdata):
+        """Reports reconnect failures without flooding the log."""
+        if self._stopping or not self._has_connected_once:
+            return
+        now = time.monotonic()
+        if now - self._last_reconnect_failure_log < RECONNECT_FAILURE_LOG_INTERVAL_SECONDS:
+            return
+        self._last_reconnect_failure_log = now
+        logger.warning("MQTT 重新連線尚未成功，程式將繼續嘗試。")
 
     def on_message(self, client, userdata, msg):
         try:
@@ -228,7 +258,7 @@ class MqttService:
         self._stopping = False
         try:
             self.client.username_pw_set(self.username, self.password)
-            logger.info(f"Connecting to MQTT broker at {self.broker}:{self.port}...")
+            logger.info("正在連線 MQTT Broker：%s:%s", self.broker, self.port)
             self.client.connect(self.broker, self.port, 60)
             self.client.loop_start()
             if not self._connect_event.wait(timeout=10):
@@ -237,7 +267,7 @@ class MqttService:
                 raise MqttServiceError(self._connect_error)
             if not self.client.is_connected():
                 raise MqttServiceError("MQTT connection did not become ready")
-            logger.info("MQTT client is ready.")
+            logger.info("MQTT 服務已就緒。")
         except Exception as e:
             self.client.loop_stop()
             if isinstance(e, MqttServiceError):
@@ -246,11 +276,12 @@ class MqttService:
 
     def stop(self):
         """Stops the MQTT client loop and disconnects."""
-        logger.info("Stopping MQTT client.")
+        logger.info("正在停止 MQTT 服務。")
         self._stopping = True
         if self._node_info_timer is not None:
             self._node_info_timer.cancel()
         self.client.loop_stop()
         if self.client.is_connected():
             self.client.disconnect()
-        logger.info("MQTT client disconnected.")
+        self._mqtt_connected = False
+        logger.info("MQTT 服務已停止。")

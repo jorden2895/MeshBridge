@@ -35,6 +35,34 @@ class MqttServiceTests(unittest.TestCase):
 
         service._publish_packet.assert_not_called()
 
+    def test_reports_initial_connection_and_reconnection(self):
+        service = MqttService(AppConfig.from_dict(valid_config()))
+        service.client.subscribe = Mock(return_value=(0, 1))
+
+        with patch("mqtt_service.threading.Timer"), self.assertLogs(
+            "mqtt_service", level="INFO"
+        ) as captured:
+            service.on_connect(service.client, None, None, 0, None)
+            service.on_disconnect(service.client, None, None, 1, None)
+            service.on_connect(service.client, None, None, 0, None)
+
+        output = "\n".join(captured.output)
+        self.assertIn("MQTT 連線成功", output)
+        self.assertIn("MQTT 連線中斷", output)
+        self.assertIn("MQTT 已重新連線", output)
+
+    def test_reconnect_failure_logging_is_rate_limited(self):
+        service = MqttService(AppConfig.from_dict(valid_config()))
+        service._has_connected_once = True
+
+        with patch("mqtt_service.time.monotonic", side_effect=[31.0, 32.0]), self.assertLogs(
+            "mqtt_service", level="WARNING"
+        ) as captured:
+            service.on_connect_fail(service.client, None)
+            service.on_connect_fail(service.client, None)
+
+        self.assertEqual(len(captured.output), 1)
+
 
 class TelegramApplicationTests(unittest.TestCase):
     def test_frozen_build_suppresses_only_false_builder_warning(self):

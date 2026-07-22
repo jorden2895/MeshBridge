@@ -85,6 +85,8 @@ def create_application(
     async def post_init(application: Application) -> None:
         nonlocal telegram_loop
         telegram_loop = asyncio.get_running_loop()
+        bot_name = application.bot.username or str(application.bot.id)
+        logger.info("Telegram Bot 啟動成功：%s", bot_name)
 
         def forward_from_mqtt(message_text: str) -> None:
             if telegram_loop is None or telegram_loop.is_closed():
@@ -105,7 +107,7 @@ def create_application(
 
         mqtt_service.set_telegram_callback(forward_from_mqtt)
         await asyncio.to_thread(mqtt_service.start)
-        logger.info("Telegram and MQTT services are ready.")
+        logger.info("MeshTelegram Bridge 已就緒，可以開始轉發訊息。")
 
     async def post_shutdown(application: Application) -> None:
         await asyncio.to_thread(mqtt_service.stop)
@@ -138,5 +140,5 @@ def create_application(
 
 def start_bot(application: Application) -> None:
     """Run the Telegram polling loop until shutdown."""
-    logger.info("Starting Telegram bot polling...")
+    logger.info("正在啟動 Telegram Bot 輪詢…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
