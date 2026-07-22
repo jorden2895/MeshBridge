@@ -22,7 +22,15 @@ except ModuleNotFoundError as exc:
     tkinter_stub.ttk = types.SimpleNamespace(Entry=type("Entry", (), {}))
     sys.modules["tkinter"] = tkinter_stub
     settings_ui = import_module("settings_ui")
-from settings_ui import DEFAULT_CONFIG, SettingsEditor, build_config, flatten_config, save_config_atomic
+from settings_ui import (
+    DEFAULT_CONFIG,
+    SettingsEditor,
+    build_config,
+    check_connections,
+    flatten_config,
+    save_config_atomic,
+)
+from config import AppConfig
 from test_config import valid_config
 
 
@@ -125,6 +133,23 @@ class SettingsUiDataTests(unittest.TestCase):
         self.assertEqual(editor.variables["mqtt.port"].get(), "1883")
         self.assertEqual(editor.variables["node.id"].get(), "2882392497")
         showerror.assert_not_called()
+
+    def test_connection_results_report_services_independently_and_mask_secrets(self):
+        config = AppConfig.from_dict(valid_config())
+
+        def telegram_probe(config):
+            return "@bridge_bot"
+
+        def mqtt_probe(config):
+            raise ConnectionError(f"password={config.mqtt.password}")
+
+        results = check_connections(config, telegram_probe, mqtt_probe)
+
+        self.assertTrue(results[0].succeeded)
+        self.assertIn("@bridge_bot", results[0].message)
+        self.assertFalse(results[1].succeeded)
+        self.assertNotIn(config.mqtt.password, results[1].message)
+        self.assertIn("***", results[1].message)
 
 
 if __name__ == "__main__":

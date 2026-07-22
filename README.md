@@ -46,7 +46,8 @@ keys.
 
 On Windows, double-click `open_settings.bat` to open the local settings editor.
 It can load, validate, and save `config.json`, mask secret fields, and generate
-a random Meshtastic node ID. Saving does not contact MQTT or Telegram.
+a random Meshtastic node ID. The **測試連線** button checks the Telegram token
+and MQTT credentials without starting the bridge or sending a message.
 
 Prebuilt releases provide two standalone Windows applications:
 
@@ -67,6 +68,16 @@ Alternatively, run `run_meshtelegram_bridge.bat` after ensuring that `python`
 uses an environment containing the required dependencies.
 
 Press `Ctrl+C` to stop the bridge.
+
+The bridge writes both terminal output and a rotating `MeshTelegramBridge.log`
+beside the application. Up to five 1 MiB log files are retained. The settings
+tool can open this folder directly.
+
+Show the installed version with:
+
+```powershell
+python main.py --version
+```
 
 ## Testing
 

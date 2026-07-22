@@ -27,8 +27,7 @@ class MqttServiceError(RuntimeError):
 class MqttService:
     def __init__(self, config: AppConfig):
         self.telegram_callback = None
-        # Store tuples of (unique_key, timestamp) for deduplication.
-        # The key is a tuple of (from_node_id, message_payload).
+        # Store tuples of ((from_node_id, packet_id), timestamp) for MQTT redelivery deduplication.
         self.recent_packets = deque(maxlen=200)
         self.dedup_window_seconds = 60  # Deduplication time window in seconds
 
@@ -45,7 +44,7 @@ class MqttService:
         self.node_id = config.node.node_id
         self.long_name = config.node.long_name
         self.short_name = config.node.short_name
-        self.node_name = '!' + hex(self.node_id)[2:] # This is the gateway_id format
+        self.node_name = f"!{self.node_id:08x}"
 
         # MQTT topics
         self.subscribe_topic = f"{self.root_topic}{self.channel}/#"
@@ -86,7 +85,9 @@ class MqttService:
             if result != mqtt.MQTT_ERR_SUCCESS:
                 self._connect_error = f"failed to subscribe to {self.subscribe_topic}: MQTT error {result}"
                 logger.error("MQTT 主題訂閱失敗：錯誤代碼 %s", result)
-            # Broadcast our NodeInfo after a short delay
+            # A reconnect replaces the pending NodeInfo broadcast instead of leaking timers.
+            if self._node_info_timer is not None:
+                self._node_info_timer.cancel()
             self._node_info_timer = threading.Timer(2.0, self._send_node_info)
             self._node_info_timer.daemon = True
             self._node_info_timer.start()
@@ -121,17 +122,23 @@ class MqttService:
             se.ParseFromString(msg.payload)
             mp = se.packet
             
-            # Decrypt the packet first to access payload for deduplication
-            if mp.HasField("encrypted") and not mp.HasField("decoded"):
-                self.decode_encrypted(mp)
+            # Encrypted MQTT topics must never trust a caller-supplied decoded field.
+            expected_channel = channel_hash(self.channel, self.key)
+            if (
+                not mp.HasField("encrypted")
+                or mp.channel != expected_channel
+                or not self.decode_encrypted(mp)
+            ):
+                logger.warning("Ignoring unauthenticated MQTT packet ID %s.", getattr(mp, "id", 0))
+                return
 
             # Process only decoded text messages from other nodes
             if mp.decoded.portnum == portnums_pb2.TEXT_MESSAGE_APP and getattr(mp, "from") != self.node_id:
                 sender_node_id = getattr(mp, "from")
                 payload_bytes = mp.decoded.payload
                 
-                # --- Deduplication Check based on Sender ID + Payload ---
-                unique_key = (sender_node_id, payload_bytes)
+                # MQTT retries keep the same packet ID; repeated text with a new ID is legitimate.
+                unique_key = (sender_node_id, getattr(mp, "id", 0))
                 current_time = time.time()
 
                 # 1. Purge old packets from the cache
@@ -140,7 +147,11 @@ class MqttService:
 
                 # 2. Check if the unique key is in the recent cache
                 if any(unique_key == p_key for p_key, ts in self.recent_packets):
-                    logger.info(f"Ignoring duplicate message from node {hex(sender_node_id)} with same content.")
+                    logger.info(
+                        "Ignoring duplicate MQTT packet %s from node !%08x.",
+                        getattr(mp, "id", 0),
+                        sender_node_id,
+                    )
                     return
                 
                 # 3. Add the new packet to the cache
@@ -154,7 +165,7 @@ class MqttService:
                 if text_payload.strip().startswith("[TG:"):
                     return
 
-                sender_id_hex = '!' + hex(sender_node_id)[2:]
+                sender_id_hex = f"!{sender_node_id:08x}"
                 from_name = f"Node {sender_id_hex}"
                 
                 message_to_forward = f"[{from_name}]: {text_payload}"
@@ -180,6 +191,9 @@ class MqttService:
 
     def _send_node_info(self):
         """Builds and broadcasts our node's User packet (NodeInfo)."""
+        if self._stopping or not self._mqtt_connected or not self.client.is_connected():
+            logger.debug("Skipping NodeInfo broadcast because MQTT is not connected.")
+            return
         logger.info(f"Broadcasting NodeInfo: long_name='{self.long_name}', short_name='{self.short_name}'")
         
         user_packet = mesh_pb2.User()
@@ -192,7 +206,10 @@ class MqttService:
         data_packet.portnum = portnums_pb2.NODEINFO_APP
         data_packet.payload = user_packet.SerializeToString()
 
-        self._publish_packet(data_packet)
+        try:
+            self._publish_packet(data_packet)
+        except MqttServiceError as exc:
+            logger.warning("NodeInfo 發布失敗：%s", exc)
 
     def send_message(self, text, destination_id=BROADCAST_NUM) -> None:
         """Encodes and sends a text message to the Meshtastic network via MQTT."""
@@ -246,7 +263,7 @@ class MqttService:
         logger.info(f"Packet with PortNum {data_packet.portnum} published to MQTT.")
 
 
-    def decode_encrypted(self, mp):
+    def decode_encrypted(self, mp) -> bool:
         """Decrypts an encrypted Meshtastic packet."""
         try:
             decrypted_bytes = crypt_payload(
@@ -257,9 +274,12 @@ class MqttService:
             data.ParseFromString(decrypted_bytes)
             mp.decoded.CopyFrom(data)
             logger.debug("Successfully decrypted packet.")
+            return True
 
         except Exception as e:
             logger.warning(f"Failed to decrypt packet ID {mp.id}: {e}")
+            mp.ClearField("decoded")
+            return False
 
     def start(self):
         """Connects to the MQTT broker and starts the client loop."""
@@ -290,6 +310,7 @@ class MqttService:
         self._stopping = True
         if self._node_info_timer is not None:
             self._node_info_timer.cancel()
+            self._node_info_timer = None
         self.client.loop_stop()
         if self.client.is_connected():
             self.client.disconnect()
