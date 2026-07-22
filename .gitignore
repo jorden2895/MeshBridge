@@ -1,0 +1,9 @@
+*.db
+.DS_Store
+presets.json
+.venv
+venv
+__pycache__
+
+# Local credentials and channel keys
+/config.json
