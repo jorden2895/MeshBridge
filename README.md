@@ -86,11 +86,6 @@ The service validates all required settings before opening either network
 connection. A failure to connect to MQTT also stops Telegram polling startup,
 so the bridge cannot appear healthy while only one side is working.
 
-## Archived legacy files
-
-Unused files inherited from the upstream project are kept under
-`archive/legacy/` for reference. They are not part of the bridge's runtime.
-
 ## License
 
 This project is distributed under the terms in `LICENSE`.
