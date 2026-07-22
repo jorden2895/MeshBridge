@@ -4,6 +4,9 @@ presets.json
 .venv
 venv
 __pycache__
+build/
+dist/
+*.spec
 
 # Local credentials and channel keys
 /config.json

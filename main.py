@@ -2,6 +2,7 @@
 
 import logging
 
+from app_paths import application_dir
 from config import ConfigError, load_config
 from mqtt_service import MqttService
 from telegram_bridge import create_application, start_bot
@@ -18,7 +19,7 @@ def setup_logging(level_name: str) -> None:
 
 def main() -> int:
     try:
-        config = load_config()
+        config = load_config(application_dir() / "config.json")
         setup_logging(config.logging_level)
         logger.info("Starting MeshTelegram Bridge...")
 
@@ -31,7 +32,10 @@ def main() -> int:
         start_bot(telegram_app)
         return 0
     except ConfigError as exc:
-        logger.error("Invalid configuration: %s", exc)
+        logger.error(
+            "Invalid configuration. Open MeshTelegramBridgeSettings.exe and validate config.json."
+        )
+        logger.debug("Configuration validation detail: %s", exc)
         return 2
     except KeyboardInterrupt:
         logger.info("Shutdown signal received.")

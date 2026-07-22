@@ -9,12 +9,35 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any
 
+from app_paths import application_dir
 from config import AppConfig, ConfigError
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = application_dir()
 CONFIG_PATH = PROJECT_DIR / "config.json"
 EXAMPLE_PATH = PROJECT_DIR / "config.json.example"
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "logging_level": "INFO",
+    "telegram": {
+        "bot_token": "YOUR_TELEGRAM_BOT_TOKEN_HERE",
+        "target_chat_id": "YOUR_TARGET_CHAT_ID_HERE",
+    },
+    "mqtt": {
+        "broker": "mqtt.meshtastic.org",
+        "port": 1883,
+        "username": "meshdev",
+        "password": "large4cats",
+        "root_topic": "msh/US/2/e/",
+        "channel_name": "LongFast",
+        "channel_key": "1PG7OiApB1nwvP+rz05pAQ==",
+    },
+    "node": {
+        "id": 2882392497,
+        "long_name": "MeshTelegram Bridge",
+        "short_name": "TGBT",
+    },
+}
 
 FIELD_GROUPS = (
     (
@@ -185,12 +208,19 @@ class SettingsEditor(tk.Tk):
         return {key: variable.get() for key, variable in self.variables.items()}
 
     def load(self) -> None:
-        source = CONFIG_PATH if CONFIG_PATH.exists() else EXAMPLE_PATH
         try:
-            data = json.loads(source.read_text(encoding="utf-8"))
+            if CONFIG_PATH.exists():
+                source_name = CONFIG_PATH.name
+                data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            elif EXAMPLE_PATH.exists():
+                source_name = EXAMPLE_PATH.name
+                data = json.loads(EXAMPLE_PATH.read_text(encoding="utf-8"))
+            else:
+                source_name = "內建預設值"
+                data = DEFAULT_CONFIG
             for key, value in flatten_config(data).items():
                 self.variables[key].set(value)
-            self.status.set(f"已載入 {source.name}")
+            self.status.set(f"已載入 {source_name}")
         except (OSError, json.JSONDecodeError) as exc:
             messagebox.showerror("載入失敗", str(exc), parent=self)
             self.status.set("載入失敗")

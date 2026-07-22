@@ -3,11 +3,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from settings_ui import build_config, flatten_config, save_config_atomic
+from settings_ui import DEFAULT_CONFIG, build_config, flatten_config, save_config_atomic
 from test_config import valid_config
 
 
 class SettingsUiDataTests(unittest.TestCase):
+    def test_embedded_defaults_have_all_required_fields(self):
+        values = flatten_config(DEFAULT_CONFIG)
+        self.assertIn("telegram.bot_token", values)
+        self.assertIn("mqtt.channel_key", values)
+        self.assertIn("node.id", values)
+
     def test_flatten_and_build_round_trip(self):
         raw = valid_config()
         values = flatten_config(raw)

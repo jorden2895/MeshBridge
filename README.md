@@ -48,6 +48,13 @@ On Windows, double-click `open_settings.bat` to open the local settings editor.
 It can load, validate, and save `config.json`, mask secret fields, and generate
 a random Meshtastic node ID. Saving does not contact MQTT or Telegram.
 
+Prebuilt releases provide two standalone Windows applications:
+
+- `MeshTelegramBridgeSettings.exe` opens the settings editor and creates
+  `config.json` beside the executable.
+- `MeshTelegramBridge.exe` runs the bridge using `config.json` from the same
+  directory.
+
 ## Running
 
 With the virtual environment activated:
