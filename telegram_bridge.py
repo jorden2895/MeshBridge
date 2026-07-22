@@ -9,6 +9,7 @@ import warnings
 from functools import partial
 
 from telegram import Bot, Update
+from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.warnings import PTBUserWarning
 
@@ -21,11 +22,19 @@ logger = logging.getLogger(__name__)
 async def forward_to_telegram(bot: Bot, message_text: str, chat_id: int) -> None:
     """Forward one Meshtastic message through the application's shared bot."""
     await bot.send_message(chat_id=chat_id, text=message_text)
-    logger.info("Forwarded Meshtastic message to Telegram chat %s", chat_id)
+    logger.info("Forwarded Meshtastic message to the configured Telegram chat.")
+
+
+def is_authorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    return chat is not None and chat.id == context.bot_data.get("target_chat_id")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Respond to the /start command."""
+    if not is_authorized(update, context):
+        logger.warning("Ignored /start from an unauthorized Telegram chat.")
+        return
     user = update.effective_user
     message = update.effective_message
     if user is None or message is None:
@@ -40,7 +49,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Respond to the /help command."""
-    if update.effective_message is not None:
+    if is_authorized(update, context) and update.effective_message is not None:
         await update.effective_message.reply_text(
             "I forward messages between the configured Meshtastic channel and Telegram chat."
         )
@@ -61,8 +70,7 @@ async def handle_message(
     if chat is None or message is None or user is None or not message.text:
         return
     if chat.id != target_chat_id:
-        await message.reply_text("This chat is not authorized to use this bot.")
-        logger.warning("Rejected message from unauthorized chat ID %s", chat.id)
+        logger.warning("Ignored a message from an unauthorized Telegram chat.")
         return
 
     formatted_text = f"[TG:{user.id}]: {message.text}"
@@ -135,6 +143,26 @@ def create_application(
             partial(handle_message, mqtt_service=mqtt_service),
         )
     )
+
+    conflict_reported = False
+
+    async def handle_telegram_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        nonlocal conflict_reported
+        if isinstance(context.error, Conflict):
+            if not conflict_reported:
+                logger.error(
+                    "Telegram Bot 發生重複輪詢衝突：相同 Bot Token 正在其他程式或電腦執行。"
+                )
+                conflict_reported = True
+            application.stop_running()
+            return
+        logger.error(
+            "Telegram 更新處理失敗：%s",
+            context.error,
+            exc_info=(type(context.error), context.error, context.error.__traceback__),
+        )
+
+    application.add_error_handler(handle_telegram_error)
     return application
 
 

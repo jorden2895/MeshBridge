@@ -1,21 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
 import tempfile
 import tkinter as tk
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any
 
+import paho.mqtt.client as mqtt
+from telegram import Bot
+
 from app_paths import application_dir
 from config import AppConfig, ConfigError
+from version import __version__
 
 
 PROJECT_DIR = application_dir()
 CONFIG_PATH = PROJECT_DIR / "config.json"
 EXAMPLE_PATH = PROJECT_DIR / "config.json.example"
+CONNECTION_TIMEOUT_SECONDS = 10
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "logging_level": "INFO",
@@ -68,6 +76,89 @@ FIELD_GROUPS = (
         ),
     ),
 )
+
+
+@dataclass(frozen=True)
+class ConnectionTestResult:
+    service: str
+    succeeded: bool
+    message: str
+
+
+def _safe_error_message(exc: Exception, secrets: tuple[str, ...]) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    for secret in secrets:
+        if secret:
+            message = message.replace(secret, "***")
+    return message
+
+
+def probe_telegram(config: AppConfig) -> str:
+    async def get_identity() -> str:
+        async with Bot(config.telegram.bot_token) as bot:
+            user = await bot.get_me()
+            return f"@{user.username}" if user.username else user.full_name
+
+    return asyncio.run(get_identity())
+
+
+def probe_mqtt(config: AppConfig, timeout: float = CONNECTION_TIMEOUT_SECONDS) -> str:
+    connected = threading.Event()
+    outcome: dict[str, str] = {}
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    client.username_pw_set(config.mqtt.username, config.mqtt.password)
+
+    def on_connect(client, userdata, flags, reason_code, properties) -> None:
+        if reason_code == 0:
+            outcome["success"] = f"{config.mqtt.broker}:{config.mqtt.port}"
+        else:
+            outcome["error"] = f"Broker 拒絕連線：{reason_code}"
+        connected.set()
+
+    def on_connect_fail(client, userdata) -> None:
+        outcome["error"] = "無法連線至 Broker"
+        connected.set()
+
+    client.on_connect = on_connect
+    client.on_connect_fail = on_connect_fail
+    try:
+        client.connect(config.mqtt.broker, config.mqtt.port, 60)
+        client.loop_start()
+        if not connected.wait(timeout):
+            raise TimeoutError("連線逾時")
+        if "error" in outcome:
+            raise ConnectionError(outcome["error"])
+        return outcome["success"]
+    finally:
+        if client.is_connected():
+            client.disconnect()
+        client.loop_stop()
+
+
+def check_connections(
+    config: AppConfig,
+    telegram_probe=probe_telegram,
+    mqtt_probe=probe_mqtt,
+) -> list[ConnectionTestResult]:
+    results: list[ConnectionTestResult] = []
+    secrets = (
+        config.telegram.bot_token,
+        config.mqtt.password,
+        config.mqtt.channel_key.hex(),
+    )
+    for service, probe in (("Telegram", telegram_probe), ("MQTT", mqtt_probe)):
+        try:
+            detail = probe(config)
+            results.append(ConnectionTestResult(service, True, f"連線成功：{detail}"))
+        except Exception as exc:
+            results.append(
+                ConnectionTestResult(
+                    service,
+                    False,
+                    f"連線失敗：{_safe_error_message(exc, secrets)}",
+                )
+            )
+    return results
 
 
 def flatten_config(data: dict[str, Any]) -> dict[str, str]:
@@ -140,8 +231,8 @@ def save_config_atomic(data: dict[str, Any], path: Path = CONFIG_PATH) -> None:
 class SettingsEditor(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("MeshTelegram Bridge 設定工具")
-        self.geometry("720x690")
+        self.title(f"MeshTelegram Bridge 設定工具 v{__version__}")
+        self.geometry("760x720")
         self.minsize(620, 600)
 
         self.variables: dict[str, tk.StringVar] = {
@@ -159,7 +250,11 @@ class SettingsEditor(tk.Tk):
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
 
-        title = ttk.Label(outer, text="MeshTelegram Bridge 設定工具", font=("Segoe UI", 16, "bold"))
+        title = ttk.Label(
+            outer,
+            text=f"MeshTelegram Bridge 設定工具 v{__version__}",
+            font=("Segoe UI", 16, "bold"),
+        )
         title.grid(row=0, column=0, sticky="w", pady=(0, 10))
 
         general = ttk.LabelFrame(outer, text="一般設定", padding=10)
@@ -206,6 +301,11 @@ class SettingsEditor(tk.Tk):
         ttk.Button(controls, text="重新載入", command=self.load).pack(side="right", padx=(8, 0))
         ttk.Button(controls, text="儲存", command=self.save).pack(side="right", padx=(8, 0))
         ttk.Button(controls, text="驗證", command=self.validate).pack(side="right")
+        self.test_button = ttk.Button(controls, text="測試連線", command=self.test_connections)
+        self.test_button.pack(side="right", padx=(8, 0))
+        ttk.Button(controls, text="開啟日誌資料夾", command=self.open_log_folder).pack(
+            side="right", padx=(8, 0)
+        )
 
         ttk.Separator(outer).grid(row=row + 1, column=0, sticky="ew", pady=(6, 8))
         ttk.Label(outer, textvariable=self.status).grid(row=row + 2, column=0, sticky="w")
@@ -262,6 +362,41 @@ class SettingsEditor(tk.Tk):
     def generate_node_id(self) -> None:
         self.variables["node.id"].set(str(random.SystemRandom().randint(1, 0xFFFFFFFF)))
         self.status.set("已產生隨機節點 ID")
+
+    def open_log_folder(self) -> None:
+        try:
+            os.startfile(PROJECT_DIR)  # type: ignore[attr-defined]
+        except (AttributeError, OSError) as exc:
+            messagebox.showerror("無法開啟資料夾", str(exc), parent=self)
+
+    def test_connections(self) -> None:
+        try:
+            config = AppConfig.from_dict(build_config(self.current_values()))
+        except (ConfigError, KeyError) as exc:
+            messagebox.showerror("無法測試連線", str(exc), parent=self)
+            self.status.set("設定內容不正確")
+            return
+
+        self.test_button.configure(state="disabled")
+        self.status.set("正在測試 Telegram 與 MQTT 連線…")
+
+        def worker() -> None:
+            results = check_connections(config)
+            self.after(0, self._show_connection_results, results)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_connection_results(self, results: list[ConnectionTestResult]) -> None:
+        self.test_button.configure(state="normal")
+        details = "\n".join(
+            f"{result.service}：{result.message}" for result in results
+        )
+        if all(result.succeeded for result in results):
+            self.status.set("Telegram 與 MQTT 連線測試成功")
+            messagebox.showinfo("連線測試完成", details, parent=self)
+        else:
+            self.status.set("部分連線測試失敗")
+            messagebox.showerror("連線測試完成", details, parent=self)
 
 
 def main() -> None:
