@@ -1,10 +1,13 @@
 import unittest
+import sys
+import warnings
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from config import AppConfig
 from mqtt_service import MqttService, MqttServiceError
-from telegram_bridge import handle_message
+from telegram.warnings import PTBUserWarning
+from telegram_bridge import create_application, handle_message
 
 from test_config import valid_config
 
@@ -31,6 +34,34 @@ class MqttServiceTests(unittest.TestCase):
         service.send_message("a" * 234)
 
         service._publish_packet.assert_not_called()
+
+
+class TelegramApplicationTests(unittest.TestCase):
+    def test_frozen_build_suppresses_only_false_builder_warning(self):
+        mqtt_service = Mock()
+        fake_application = Mock()
+        fake_application.bot_data = {}
+        builder = Mock()
+        builder.token.return_value = builder
+        builder.post_init.return_value = builder
+        builder.post_shutdown.return_value = builder
+
+        def build():
+            warnings.warn(
+                "`Application` instances should be built via the `ApplicationBuilder`.",
+                PTBUserWarning,
+            )
+            return fake_application
+
+        builder.build.side_effect = build
+        with patch.object(sys, "frozen", True, create=True), patch.object(
+            create_application.__globals__["Application"], "builder", return_value=builder
+        ):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                create_application("token", -100123, mqtt_service)
+
+        self.assertEqual(caught, [])
 
     def test_limit_counts_utf8_bytes_not_characters(self):
         service = MqttService(AppConfig.from_dict(valid_config()))

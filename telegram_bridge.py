@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+import warnings
 from functools import partial
 
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.warnings import PTBUserWarning
 
 from mqtt_service import MqttService, MqttServiceError
 
@@ -107,13 +110,20 @@ def create_application(
     async def post_shutdown(application: Application) -> None:
         await asyncio.to_thread(mqtt_service.stop)
 
-    application = (
-        Application.builder()
-        .token(bot_token)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
+    with warnings.catch_warnings():
+        if getattr(sys, "frozen", False):
+            warnings.filterwarnings(
+                "ignore",
+                message=r"`Application` instances should be built via the `ApplicationBuilder`\.",
+                category=PTBUserWarning,
+            )
+        application = (
+            Application.builder()
+            .token(bot_token)
+            .post_init(post_init)
+            .post_shutdown(post_shutdown)
+            .build()
+        )
     application.bot_data["target_chat_id"] = target_chat_id
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
