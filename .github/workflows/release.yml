@@ -1,0 +1,119 @@
+name: Build release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    name: Build draft release
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Validate version tag
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Version tag must use the vX.Y.Z format."
+          }
+
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-ci.txt
+            requirements-build.txt
+
+      - name: Create build environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-ci.txt
+
+      - name: Run unit tests
+        run: .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+
+      - name: Audit dependencies
+        run: .\.venv\Scripts\python.exe -m pip_audit -r requirements.txt
+
+      - name: Scan source code
+        run: .\.venv\Scripts\python.exe -m bandit -r . -x ./.venv,./build,./dist,./tests -ll
+
+      - name: Build executables
+        shell: pwsh
+        run: .\build_release.ps1
+
+      - name: Create release notes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $bridgeHash = (Get-FileHash -LiteralPath '.\dist\MeshTelegramBridge.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $settingsHash = (Get-FileHash -LiteralPath '.\dist\MeshTelegramBridgeSettings.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $generated = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" `
+            -f "tag_name=$tag" `
+            -f "target_commitish=$env:GITHUB_SHA" | ConvertFrom-Json
+          $notes = @"
+          $($generated.body)
+
+          ## 下載
+
+          - ``MeshTelegramBridge.exe``：執行橋接服務。
+          - ``MeshTelegramBridgeSettings.exe``：中文圖形化設定工具。
+
+          請將兩個檔案放在同一資料夾中使用。既有 ``config.json`` 可以繼續沿用，請勿公開或提交該設定檔。
+
+          ## SHA-256
+
+          - ``MeshTelegramBridge.exe``：``$bridgeHash``
+          - ``MeshTelegramBridgeSettings.exe``：``$settingsHash``
+          "@
+          $notes | Set-Content -LiteralPath '.\release-notes.md' -Encoding utf8
+
+      - name: Create or update draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $existing = gh release view $tag --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $release = $existing | ConvertFrom-Json
+            if (-not $release.isDraft) {
+              throw "Release $tag is already published and will not be overwritten."
+            }
+            gh release upload $tag `
+              '.\dist\MeshTelegramBridge.exe#MeshTelegramBridge.exe' `
+              '.\dist\MeshTelegramBridgeSettings.exe#MeshTelegramBridgeSettings.exe' `
+              --clobber
+            gh release edit $tag `
+              --draft `
+              --title "MeshTelegram Bridge $tag" `
+              --notes-file '.\release-notes.md'
+          }
+          else {
+            gh release create $tag `
+              '.\dist\MeshTelegramBridge.exe#MeshTelegramBridge.exe' `
+              '.\dist\MeshTelegramBridgeSettings.exe#MeshTelegramBridgeSettings.exe' `
+              --draft `
+              --title "MeshTelegram Bridge $tag" `
+              --notes-file '.\release-notes.md'
+          }
