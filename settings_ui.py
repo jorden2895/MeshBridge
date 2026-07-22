@@ -79,6 +79,12 @@ def flatten_config(data: dict[str, Any]) -> dict[str, str]:
     return values
 
 
+def require_object_config(data: Any, source_name: str) -> dict[str, Any]:
+    if isinstance(data, dict):
+        return data
+    raise ConfigError(f"{source_name} 的格式錯誤：最外層必須是 JSON 物件。")
+
+
 def build_config(values: dict[str, str]) -> dict[str, Any]:
     """Build and validate the JSON-compatible configuration from UI strings."""
     raw: dict[str, Any] = {
@@ -218,10 +224,11 @@ class SettingsEditor(tk.Tk):
             else:
                 source_name = "內建預設值"
                 data = DEFAULT_CONFIG
+            data = require_object_config(data, source_name)
             for key, value in flatten_config(data).items():
                 self.variables[key].set(value)
             self.status.set(f"已載入 {source_name}")
-        except (OSError, json.JSONDecodeError) as exc:
+        except (ConfigError, OSError, json.JSONDecodeError) as exc:
             messagebox.showerror("載入失敗", str(exc), parent=self)
             self.status.set("載入失敗")
 
