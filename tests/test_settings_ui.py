@@ -1,9 +1,28 @@
 import json
+import sys
 import tempfile
+import types
 import unittest
+from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from settings_ui import DEFAULT_CONFIG, build_config, flatten_config, save_config_atomic
+try:
+    import settings_ui
+except ModuleNotFoundError as exc:
+    if exc.name != "tkinter":
+        raise
+    tkinter_stub = types.ModuleType("tkinter")
+    tkinter_stub.Tk = type("Tk", (), {})
+    tkinter_stub.StringVar = type("StringVar", (), {})
+    tkinter_stub.BooleanVar = type("BooleanVar", (), {})
+    tkinter_stub.TclError = Exception
+    tkinter_stub.messagebox = types.SimpleNamespace(showerror=None, showinfo=None)
+    tkinter_stub.ttk = types.SimpleNamespace(Entry=type("Entry", (), {}))
+    sys.modules["tkinter"] = tkinter_stub
+    settings_ui = import_module("settings_ui")
+from settings_ui import DEFAULT_CONFIG, SettingsEditor, build_config, flatten_config, save_config_atomic
 from test_config import valid_config
 
 
@@ -35,6 +54,77 @@ class SettingsUiDataTests(unittest.TestCase):
             loaded = json.loads(path.read_text(encoding="utf-8"))
 
         self.assertEqual(loaded["node"]["long_name"], "台灣橋接器")
+
+    def test_load_handles_non_object_json_without_crashing(self):
+        class FakeVar:
+            def __init__(self, value: str = ""):
+                self.value = value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+        initial_values = flatten_config(valid_config())
+        non_objects = ([], "hello", None)
+
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            example_path = Path(directory) / "config.example.json"
+            for payload in non_objects:
+                with self.subTest(payload=payload):
+                    config_path.write_text(json.dumps(payload), encoding="utf-8")
+                    editor = SimpleNamespace(
+                        variables={key: FakeVar(value) for key, value in initial_values.items()},
+                        status=FakeVar("就緒"),
+                    )
+                    with patch.object(settings_ui, "CONFIG_PATH", config_path), patch.object(
+                        settings_ui, "EXAMPLE_PATH", example_path
+                    ), patch.object(settings_ui.messagebox, "showerror") as showerror:
+                        SettingsEditor.load(editor)
+                    self.assertEqual(editor.status.get(), "載入失敗")
+                    self.assertEqual(
+                        {key: value.get() for key, value in editor.variables.items()},
+                        initial_values,
+                    )
+                    showerror.assert_called_once()
+                    self.assertIn("最外層必須是 JSON 物件", showerror.call_args.args[1])
+
+    def test_load_object_json_behavior_unchanged(self):
+        class FakeVar:
+            def __init__(self, value: str = ""):
+                self.value = value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+        loaded_values = valid_config()
+
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            example_path = Path(directory) / "config.example.json"
+            config_path.write_text(json.dumps(loaded_values), encoding="utf-8")
+
+            editor = SimpleNamespace(
+                variables={
+                    key: FakeVar("")
+                    for key in ["logging_level"] + [path for _, fields in settings_ui.FIELD_GROUPS for path, _, _ in fields]
+                },
+                status=FakeVar("就緒"),
+            )
+            with patch.object(settings_ui, "CONFIG_PATH", config_path), patch.object(
+                settings_ui, "EXAMPLE_PATH", example_path
+            ), patch.object(settings_ui.messagebox, "showerror") as showerror:
+                SettingsEditor.load(editor)
+
+        self.assertEqual(editor.status.get(), "已載入 config.json")
+        self.assertEqual(editor.variables["mqtt.port"].get(), "1883")
+        self.assertEqual(editor.variables["node.id"].get(), "2882392497")
+        showerror.assert_not_called()
 
 
 if __name__ == "__main__":
