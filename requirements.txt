@@ -1,5 +1,5 @@
 # Runtime dependencies for MeshTelegram Bridge
-cryptography==46.0.4
+cryptography==48.0.1
 meshtastic==2.7.11
 paho-mqtt==2.1.0
 python-telegram-bot==22.6
