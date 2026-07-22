@@ -4,6 +4,7 @@ import warnings
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import mqtt_service as mqtt_service_module
 from config import AppConfig
 from mqtt_service import MqttService, MqttServiceError
 from telegram.warnings import PTBUserWarning
@@ -62,6 +63,30 @@ class MqttServiceTests(unittest.TestCase):
             service.on_connect_fail(service.client, None)
 
         self.assertEqual(len(captured.output), 1)
+
+    def test_meshtastic_info_log_excludes_message_body(self):
+        service = MqttService(AppConfig.from_dict(valid_config()))
+        service.telegram_callback = Mock()
+        message_text = "private channel message"
+        payload = message_text.encode("utf-8")
+
+        envelope = mqtt_service_module.mqtt_pb2.ServiceEnvelope()
+        packet = envelope.packet
+        packet.id = 42
+        setattr(packet, "from", 0x1234)
+        packet.decoded.portnum = mqtt_service_module.portnums_pb2.TEXT_MESSAGE_APP
+        packet.decoded.payload = payload
+
+        msg = SimpleNamespace(payload=envelope.SerializeToString())
+        with self.assertLogs("mqtt_service", level="INFO") as captured:
+            service.on_message(None, None, msg)
+
+        output = "\n".join(captured.output)
+        self.assertIn("packet_id=42", output)
+        self.assertIn(f"payload_bytes={len(payload)}", output)
+        self.assertIn("from !1234", output)
+        self.assertNotIn(message_text, output)
+        service.telegram_callback.assert_called_once_with("[Node !1234]: private channel message")
 
 
 class TelegramApplicationTests(unittest.TestCase):
