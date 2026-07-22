@@ -158,7 +158,17 @@ class MqttService:
                 from_name = f"Node {sender_id_hex}"
                 
                 message_to_forward = f"[{from_name}]: {text_payload}"
-                logger.info(f"Received Meshtastic message to forward: {message_to_forward}")
+                packet_id = getattr(mp, "id", 0)
+                logger.info(
+                    "Received Meshtastic text packet from %s (packet_id=%s, payload_bytes=%s)",
+                    sender_id_hex,
+                    packet_id,
+                    len(payload_bytes),
+                )
+                logger.debug(
+                    "DEBUG ONLY (privacy risk): full Meshtastic message to forward: %s",
+                    message_to_forward,
+                )
                 
                 if self.telegram_callback is None:
                     logger.error("Telegram callback is not configured; dropping received message.")
