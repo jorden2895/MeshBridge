@@ -3,3 +3,5 @@ cryptography==49.0.0
 meshtastic==2.7.11
 paho-mqtt==2.1.0
 python-telegram-bot==22.8
+Pillow==12.3.0
+pystray==0.19.5

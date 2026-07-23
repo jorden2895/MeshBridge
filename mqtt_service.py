@@ -7,8 +7,9 @@ import random
 import threading
 from collections import deque
 
-from config import AppConfig
+from config import AppConfig, RouteConfig
 from meshtastic_codec import channel_hash, crypt_payload
+from runtime_state import RuntimeState
 
 try:
     from meshtastic.protobuf import mesh_pb2, mqtt_pb2, portnums_pb2
@@ -20,13 +21,22 @@ except ImportError as exc:
 logger = logging.getLogger(__name__)
 MAX_MESHTASTIC_PAYLOAD_BYTES = mesh_pb2.Constants.DATA_PAYLOAD_LEN
 RECONNECT_FAILURE_LOG_INTERVAL_SECONDS = 30
+NODE_INFO_INITIAL_DELAY_SECONDS = 2
+NODE_INFO_INTERVAL_SECONDS = 15 * 60
 
 class MqttServiceError(RuntimeError):
     """Raised when the MQTT service cannot start or publish a message."""
 
 class MqttService:
-    def __init__(self, config: AppConfig):
+    def __init__(
+        self,
+        config: AppConfig,
+        route: RouteConfig | None = None,
+        runtime_state: RuntimeState | None = None,
+        route_id: str = "route-1",
+    ):
         self.telegram_callback = None
+        self.fatal_callback = None
         # Store tuples of ((from_node_id, packet_id), timestamp) for MQTT redelivery deduplication.
         self.recent_packets = deque(maxlen=200)
         self.dedup_window_seconds = 60  # Deduplication time window in seconds
@@ -37,8 +47,12 @@ class MqttService:
         self.username = config.mqtt.username
         self.password = config.mqtt.password
         self.root_topic = config.mqtt.root_topic
-        self.channel = config.mqtt.channel_name
-        self.key = config.mqtt.channel_key
+        selected_route = route or config.routes[0]
+        self.route = selected_route
+        self.route_id = route_id
+        self.runtime_state = runtime_state
+        self.channel = selected_route.channel_name
+        self.key = selected_route.channel_key
 
         # Node settings
         self.node_id = config.node.node_id
@@ -62,38 +76,60 @@ class MqttService:
         self._connect_event = threading.Event()
         self._connect_error = None
         self._node_info_timer = None
+        self._node_info_lock = threading.Lock()
         self._stopping = False
         self._has_connected_once = False
         self._mqtt_connected = False
         self._last_reconnect_failure_log = 0.0
+        if self.runtime_state is not None:
+            self.runtime_state.register_route(
+                self.route_id,
+                self.route.name,
+                f"{self.broker}:{self.port}",
+            )
+
+    def _set_status(self, status: str, error: str | None = None) -> None:
+        if self.runtime_state is not None:
+            self.runtime_state.set_mqtt(self.route_id, status, error)
+
+    def _increment(self, key: str) -> None:
+        if self.runtime_state is not None:
+            self.runtime_state.increment(key)
 
     def set_telegram_callback(self, callback):
         self.telegram_callback = callback
 
+    def set_fatal_callback(self, callback):
+        self.fatal_callback = callback
+
     def on_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code == 0:
+            logger.info("正在訂閱 MQTT 主題：%s", self.subscribe_topic)
+            result, _ = client.subscribe(self.subscribe_topic)
+            if result != mqtt.MQTT_ERR_SUCCESS:
+                self._connect_error = f"failed to subscribe to {self.subscribe_topic}: MQTT error {result}"
+                self._mqtt_connected = False
+                self._set_status("error", self._connect_error)
+                logger.error("MQTT 主題訂閱失敗：錯誤代碼 %s", result)
+                self._connect_event.set()
+                if self.fatal_callback is not None:
+                    self.fatal_callback(self._connect_error)
+                return
             if self._has_connected_once:
                 logger.info("MQTT 已重新連線：%s:%s", self.broker, self.port)
             else:
                 logger.info("MQTT 連線成功：%s:%s", self.broker, self.port)
             self._has_connected_once = True
             self._mqtt_connected = True
+            self._set_status("connected")
             self._last_reconnect_failure_log = 0.0
             self._connect_error = None
-            logger.info("正在訂閱 MQTT 主題：%s", self.subscribe_topic)
-            result, _ = client.subscribe(self.subscribe_topic)
-            if result != mqtt.MQTT_ERR_SUCCESS:
-                self._connect_error = f"failed to subscribe to {self.subscribe_topic}: MQTT error {result}"
-                logger.error("MQTT 主題訂閱失敗：錯誤代碼 %s", result)
             # A reconnect replaces the pending NodeInfo broadcast instead of leaking timers.
-            if self._node_info_timer is not None:
-                self._node_info_timer.cancel()
-            self._node_info_timer = threading.Timer(2.0, self._send_node_info)
-            self._node_info_timer.daemon = True
-            self._node_info_timer.start()
+            self._schedule_node_info(NODE_INFO_INITIAL_DELAY_SECONDS)
         else:
             self._mqtt_connected = False
             self._connect_error = f"broker rejected connection: {reason_code}"
+            self._set_status("error", self._connect_error)
             logger.error("MQTT 連線遭 Broker 拒絕：%s", reason_code)
         self._connect_event.set()
 
@@ -102,6 +138,7 @@ class MqttService:
         self._mqtt_connected = False
         if not self._stopping:
             if was_connected:
+                self._set_status("reconnecting", str(reason_code))
                 logger.warning(
                     "MQTT 連線中斷：%s；程式將自動嘗試重新連線。", reason_code
                 )
@@ -114,6 +151,7 @@ class MqttService:
         if now - self._last_reconnect_failure_log < RECONNECT_FAILURE_LOG_INTERVAL_SECONDS:
             return
         self._last_reconnect_failure_log = now
+        self._set_status("reconnecting")
         logger.warning("MQTT 重新連線尚未成功，程式將繼續嘗試。")
 
     def on_message(self, client, userdata, msg):
@@ -129,6 +167,7 @@ class MqttService:
                 or mp.channel != expected_channel
                 or not self.decode_encrypted(mp)
             ):
+                self._increment("decrypt_failed")
                 logger.warning("Ignoring unauthenticated MQTT packet ID %s.", getattr(mp, "id", 0))
                 return
 
@@ -147,6 +186,7 @@ class MqttService:
 
                 # 2. Check if the unique key is in the recent cache
                 if any(unique_key == p_key for p_key, ts in self.recent_packets):
+                    self._increment("duplicate_packets")
                     logger.info(
                         "Ignoring duplicate MQTT packet %s from node !%08x.",
                         getattr(mp, "id", 0),
@@ -182,6 +222,7 @@ class MqttService:
                 )
                 
                 if self.telegram_callback is None:
+                    self._increment("other_dropped")
                     logger.error("Telegram callback is not configured; dropping received message.")
                     return
                 self.telegram_callback(message_to_forward)
@@ -189,32 +230,47 @@ class MqttService:
         except Exception as e:
             logger.error(f"Error processing incoming MQTT message: {e}", exc_info=True)
 
+    def _schedule_node_info(self, delay: float) -> None:
+        if self._stopping:
+            return
+        if self._node_info_timer is not None:
+            self._node_info_timer.cancel()
+        self._node_info_timer = threading.Timer(delay, self._send_node_info)
+        self._node_info_timer.daemon = True
+        self._node_info_timer.start()
+
     def _send_node_info(self):
         """Builds and broadcasts our node's User packet (NodeInfo)."""
         if self._stopping or not self._mqtt_connected or not self.client.is_connected():
             logger.debug("Skipping NodeInfo broadcast because MQTT is not connected.")
             return
-        logger.info(f"Broadcasting NodeInfo: long_name='{self.long_name}', short_name='{self.short_name}'")
-        
-        user_packet = mesh_pb2.User()
-        user_packet.id = self.node_name
-        user_packet.long_name = self.long_name
-        user_packet.short_name = self.short_name
-        # user_packet.hw_model = "TGB-V1" # This causes a ValueError, field is not essential
-        
-        data_packet = mesh_pb2.Data()
-        data_packet.portnum = portnums_pb2.NODEINFO_APP
-        data_packet.payload = user_packet.SerializeToString()
+        with self._node_info_lock:
+            logger.info(
+                "Broadcasting NodeInfo: long_name='%s', short_name='%s'",
+                self.long_name,
+                self.short_name,
+            )
+            user_packet = mesh_pb2.User()
+            user_packet.id = self.node_name
+            user_packet.long_name = self.long_name
+            user_packet.short_name = self.short_name
 
-        try:
-            self._publish_packet(data_packet)
-        except MqttServiceError as exc:
-            logger.warning("NodeInfo 發布失敗：%s", exc)
+            data_packet = mesh_pb2.Data()
+            data_packet.portnum = portnums_pb2.NODEINFO_APP
+            data_packet.payload = user_packet.SerializeToString()
+
+            try:
+                self._publish_packet(data_packet)
+            except MqttServiceError as exc:
+                logger.warning("NodeInfo 發布失敗：%s", exc)
+            finally:
+                self._schedule_node_info(NODE_INFO_INTERVAL_SECONDS)
 
     def send_message(self, text, destination_id=BROADCAST_NUM) -> None:
         """Encodes and sends a text message to the Meshtastic network via MQTT."""
         payload = text.encode("utf-8")
         if len(payload) > MAX_MESHTASTIC_PAYLOAD_BYTES:
+            self._increment("oversized_dropped")
             logger.warning(
                 "Dropping oversized Meshtastic message (%s bytes; maximum is %s).",
                 len(payload),
@@ -228,7 +284,14 @@ class MqttService:
         data_packet.portnum = portnums_pb2.TEXT_MESSAGE_APP
         data_packet.payload = payload
         
-        self._publish_packet(data_packet, destination_id=destination_id)
+        try:
+            self._publish_packet(data_packet, destination_id=destination_id)
+        except MqttServiceError:
+            self._increment("disconnected_dropped")
+            raise
+        self._increment("telegram_to_mesh_success")
+        if self.runtime_state is not None:
+            self.runtime_state.mark_forwarded()
 
     def _publish_packet(self, data_packet, destination_id=BROADCAST_NUM):
         """Helper to wrap a Data packet in a MeshPacket and publish it."""
@@ -286,8 +349,10 @@ class MqttService:
         self._connect_event.clear()
         self._connect_error = None
         self._stopping = False
+        self._set_status("connecting")
         try:
-            self.client.username_pw_set(self.username, self.password)
+            if self.username:
+                self.client.username_pw_set(self.username, self.password or None)
             logger.info("正在連線 MQTT Broker：%s:%s", self.broker, self.port)
             self.client.connect(self.broker, self.port, 60)
             self.client.loop_start()
@@ -299,10 +364,28 @@ class MqttService:
                 raise MqttServiceError("MQTT connection did not become ready")
             logger.info("MQTT 服務已就緒。")
         except Exception as e:
-            self.client.loop_stop()
+            self._cleanup_failed_start()
             if isinstance(e, MqttServiceError):
                 raise
             raise MqttServiceError(f"failed to start MQTT client: {e}") from e
+
+    def _cleanup_failed_start(self) -> None:
+        self._stopping = True
+        if self._node_info_timer is not None:
+            self._node_info_timer.cancel()
+            self._node_info_timer = None
+        try:
+            try:
+                if self.client.is_connected():
+                    self.client.disconnect()
+            except Exception:
+                logger.exception("清理失敗的 MQTT 連線時發生錯誤。")
+        finally:
+            self.client.loop_stop()
+        self._mqtt_connected = False
+        self._connect_event.clear()
+        error = self._connect_error or "MQTT startup failed"
+        self._set_status("error", error)
 
     def stop(self):
         """Stops the MQTT client loop and disconnects."""
@@ -311,8 +394,11 @@ class MqttService:
         if self._node_info_timer is not None:
             self._node_info_timer.cancel()
             self._node_info_timer = None
-        self.client.loop_stop()
-        if self.client.is_connected():
-            self.client.disconnect()
+        try:
+            if self.client.is_connected():
+                self.client.disconnect()
+        finally:
+            self.client.loop_stop()
         self._mqtt_connected = False
+        self._set_status("stopped")
         logger.info("MQTT 服務已停止。")

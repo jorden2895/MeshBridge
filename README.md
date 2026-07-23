@@ -2,8 +2,8 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-MeshTelegram Bridge forwards text messages in both directions between an
-encrypted Meshtastic MQTT channel and one authorized Telegram chat.
+MeshTelegram Bridge forwards text messages in both directions between
+encrypted Meshtastic MQTT channels and authorized Telegram chats or topics.
 
 ## Features
 
@@ -21,6 +21,9 @@ encrypted Meshtastic MQTT channel and one authorized Telegram chat.
   at the default `INFO` level.
 - Includes a Traditional Chinese settings application that validates the
   configuration and tests Telegram and MQTT connectivity.
+- Supports up to five one-to-one Meshtastic channel ↔ Telegram chat/topic routes.
+- Shows live MQTT/Telegram state and per-run forwarding/drop statistics.
+- Offers opt-in tray mode, Windows logon startup, and stable Release updates.
 
 ## Quick start with Windows executables
 
@@ -39,18 +42,40 @@ Meshtastic channel key.
 
 ## Configuration
 
-Start from `config.json.example` when running from source. The configuration
-contains four sections:
+Start from `config.json.example` when running from source. Existing single-route
+configuration files remain compatible. New settings include:
 
 - `logging_level`: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`.
 - `telegram`: bot token and the only chat ID authorized to use the bridge.
 - `mqtt`: broker address, port, credentials, root topic, channel name, and
   channel key.
 - `node`: the virtual Meshtastic node ID, long name, and short name.
+- `routes`: up to five channel/chat/topic mappings when multi-route mode is enabled.
+- `features`: statistics, local status API, multi-route, tray, and update options.
+
+`mqtt.root_topic` is safely normalized, but MQTT wildcards `+` and `#` are
+rejected. MQTT credentials may both be blank for anonymous brokers. The node
+short name remains limited to four characters.
 
 The application validates all required values before opening a network
 connection. Failure to establish MQTT connectivity also stops Telegram polling
 startup, so the bridge cannot appear ready while only one side is working.
+
+## Status, tray, and updates
+
+The status API listens only on `127.0.0.1` and uses a random token per run. The
+settings tool treats a heartbeat older than five seconds as offline. It never
+shows the bot token, MQTT username, or channel keys, and known secrets are
+redacted from recent errors. Statistics reset whenever the Bridge restarts.
+
+Tray mode is part of `MeshTelegramBridge.exe`; double-clicking opens the
+settings tool. Release builds hide the console by default in tray mode, with
+an option to show it.
+
+Update checks use stable GitHub Releases only, send no device identifier or
+usage analytics, and default to notification mode with a 24-hour interval.
+Optional downloads and delayed installs require GitHub's SHA-256 digest to
+match both portable executables.
 
 ### Finding the Telegram chat ID
 
