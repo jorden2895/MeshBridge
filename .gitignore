@@ -10,3 +10,7 @@ dist/
 
 # Local credentials and channel keys
 /config.json
+/.meshtelegram-status.json
+/.meshtelegram-update-state.json
+/.update/
+/MeshTelegramBridge.log*

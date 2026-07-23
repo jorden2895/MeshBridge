@@ -52,7 +52,7 @@ Write-VersionInfo $SettingsVersionInfo "MeshTelegram Bridge Settings" "MeshTeleg
 & $Python -m pip install -r (Join-Path $ProjectRoot "requirements-build.txt")
 if ($LASTEXITCODE -ne 0) { throw "Failed to install PyInstaller." }
 
-& $Python -m PyInstaller --noconfirm --clean --onefile --console `
+& $Python -m PyInstaller --noconfirm --clean --onefile --windowed `
     --name MeshTelegramBridge `
     --version-file $BridgeVersionInfo `
     --distpath $Dist --workpath $Work `

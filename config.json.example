@@ -17,5 +17,22 @@
         "id": 2882392497,
         "long_name": "MeshTelegram Bridge",
         "short_name": "TGBT"
+    },
+    "features": {
+        "statistics_enabled": true,
+        "multi_route_enabled": false,
+        "status_api": {
+            "enabled": true
+        },
+        "tray": {
+            "enabled": false,
+            "show_console": true,
+            "autostart": false
+        },
+        "updates": {
+            "enabled": false,
+            "mode": "notify",
+            "interval_hours": 24
+        }
     }
 }

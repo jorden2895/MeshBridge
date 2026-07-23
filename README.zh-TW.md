@@ -2,8 +2,8 @@
 
 [English](README.md) | 繁體中文
 
-MeshTelegram Bridge 可在加密的 Meshtastic MQTT 頻道與一個經授權的
-Telegram 聊天室之間，雙向轉送文字訊息。
+MeshTelegram Bridge 可在加密的 Meshtastic MQTT 頻道與經授權的
+Telegram 聊天室／主題之間，雙向轉送文字訊息。
 
 ## 主要功能
 
@@ -17,6 +17,9 @@ Telegram 聊天室之間，雙向轉送文字訊息。
   丟棄且不傳送。
 - 同時顯示終端日誌並寫入 UTF-8 輪替日誌；預設 `INFO` 不記錄訊息內容。
 - 提供繁體中文設定工具，可驗證設定並測試 Telegram 與 MQTT 連線。
+- 可設定最多五組一對一 Meshtastic 頻道與 Telegram 聊天室／主題路由。
+- 設定工具會顯示 MQTT、Telegram 即時狀態，以及本次執行的轉送與丟棄統計。
+- 可選用系統匣、登入後自動啟動與正式 Release 更新通知；預設皆不啟用。
 
 ## 使用 Windows 執行檔快速開始
 
@@ -34,15 +37,37 @@ MQTT 密碼與 Meshtastic 頻道金鑰，請勿公開、分享或提交至 Git�
 
 ## 設定檔
 
-從原始碼執行時，請以 `config.json.example` 為範本。設定檔分為四個區段：
+從原始碼執行時，請以 `config.json.example` 為範本。舊版單一路由
+`config.json` 可直接沿用；新功能由 `features` 控制：
 
 - `logging_level`：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL`。
 - `telegram`：Bot Token 與唯一獲准使用 Bridge 的聊天室 ID。
 - `mqtt`：Broker 位址、連接埠、帳號、根主題、頻道名稱與頻道金鑰。
 - `node`：Meshtastic 虛擬節點 ID、完整名稱與簡短名稱。
+- `routes`：啟用多頻道路由時使用，最多五組；每組包含頻道、金鑰、聊天室與
+  可選的 Telegram 主題 ID。
+- `features`：狀態統計、本機狀態 API、多路由、系統匣及更新選項。
+
+`mqtt.root_topic` 會自動移除多餘的前後斜線並補上結尾斜線，但禁止 MQTT
+wildcard `+`、`#`。MQTT 帳號與密碼可同時留空以使用匿名 Broker。節點簡短
+名稱最多四個字元。
 
 程式會在建立網路連線前驗證所有必填設定。若 MQTT 無法連線，Telegram
 輪詢也不會繼續啟動，避免程式看似正常但實際只能連上一端。
+
+## 狀態、系統匣與更新
+
+本機狀態 API 只監聽 `127.0.0.1`，使用每次啟動隨機產生的權杖；設定工具將
+超過五秒未更新的心跳視為離線。狀態內容不包含 Telegram Token、MQTT 帳號或
+頻道金鑰，最近錯誤中的已知敏感值也會遮蔽。所有統計在 Bridge 重啟後歸零。
+
+系統匣模式整合於 `MeshTelegramBridge.exe`。雙擊圖示或選擇「設定」可開啟
+設定工具，選單也可結束 Bridge。Release 執行檔預設不建立主控台；未啟用系統匣
+或勾選「顯示主控台」時才顯示。
+
+更新功能只查詢正式 GitHub Release，不傳送裝置識別或使用統計。預設只通知，
+也可設定為下載或延後安裝；下載的兩個 EXE 必須通過 GitHub 提供的 SHA-256
+摘要驗證。預設檢查間隔為 24 小時，也可在設定工具立即檢查。
 
 ### 取得 Telegram 聊天室 ID
 

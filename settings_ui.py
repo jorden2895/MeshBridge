@@ -7,6 +7,7 @@ import random
 import tempfile
 import tkinter as tk
 import threading
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -17,6 +18,16 @@ from telegram import Bot
 
 from app_paths import application_dir
 from config import AppConfig, ConfigError
+from status_client import StatusUnavailable, fetch_status
+from update_service import (
+    UpdateError,
+    download_portable_release,
+    fetch_latest_release,
+    is_newer,
+    record_check,
+    schedule_portable_install,
+    should_check,
+)
 from version import __version__
 
 
@@ -24,6 +35,8 @@ PROJECT_DIR = application_dir()
 CONFIG_PATH = PROJECT_DIR / "config.json"
 EXAMPLE_PATH = PROJECT_DIR / "config.json.example"
 CONNECTION_TIMEOUT_SECONDS = 10
+STATUS_DISCOVERY_PATH = PROJECT_DIR / ".meshtelegram-status.json"
+UPDATE_STATE_PATH = PROJECT_DIR / ".meshtelegram-update-state.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "logging_level": "INFO",
@@ -45,6 +58,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "long_name": "MeshTelegram Bridge",
         "short_name": "TGBT",
     },
+    "features": {
+        "statistics_enabled": True,
+        "multi_route_enabled": False,
+        "status_api": {"enabled": True},
+        "tray": {"enabled": False, "show_console": True, "autostart": False},
+        "updates": {"enabled": False, "mode": "notify", "interval_hours": 24},
+    },
 }
 
 FIELD_GROUPS = (
@@ -52,7 +72,6 @@ FIELD_GROUPS = (
         "Telegram 設定",
         (
             ("telegram.bot_token", "機器人權杖", True),
-            ("telegram.target_chat_id", "目標聊天室 ID", False),
         ),
     ),
     (
@@ -63,8 +82,6 @@ FIELD_GROUPS = (
             ("mqtt.username", "使用者名稱", False),
             ("mqtt.password", "密碼", True),
             ("mqtt.root_topic", "根主題", False),
-            ("mqtt.channel_name", "頻道名稱", False),
-            ("mqtt.channel_key", "頻道金鑰", True),
         ),
     ),
     (
@@ -106,7 +123,8 @@ def probe_mqtt(config: AppConfig, timeout: float = CONNECTION_TIMEOUT_SECONDS) -
     connected = threading.Event()
     outcome: dict[str, str] = {}
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    client.username_pw_set(config.mqtt.username, config.mqtt.password)
+    if config.mqtt.username:
+        client.username_pw_set(config.mqtt.username, config.mqtt.password or None)
 
     def on_connect(client, userdata, flags, reason_code, properties) -> None:
         if reason_code == 0:
@@ -167,6 +185,61 @@ def flatten_config(data: dict[str, Any]) -> dict[str, str]:
         for path, _, _ in fields:
             section, key = path.split(".", 1)
             values[path] = str(data.get(section, {}).get(key, ""))
+    features = data.get("features", {})
+    status = features.get("status_api", {})
+    tray = features.get("tray", {})
+    updates = features.get("updates", {})
+    values.update(
+        {
+            "features.statistics_enabled": str(
+                features.get("statistics_enabled", True)
+            ).lower(),
+            "features.multi_route_enabled": str(
+                features.get("multi_route_enabled", False)
+            ).lower(),
+            "features.status_api.enabled": str(status.get("enabled", True)).lower(),
+            "features.tray.enabled": str(tray.get("enabled", False)).lower(),
+            "features.tray.show_console": str(
+                tray.get("show_console", True)
+            ).lower(),
+            "features.tray.autostart": str(tray.get("autostart", False)).lower(),
+            "features.updates.enabled": str(updates.get("enabled", False)).lower(),
+            "features.updates.mode": str(updates.get("mode", "notify")),
+            "features.updates.interval_hours": str(
+                updates.get("interval_hours", 24)
+            ),
+        }
+    )
+    routes = data.get("routes")
+    if not isinstance(routes, list):
+        routes = [
+            {
+                "name": "預設路由",
+                "enabled": True,
+                "channel_name": data.get("mqtt", {}).get("channel_name", ""),
+                "channel_key": data.get("mqtt", {}).get("channel_key", ""),
+                "target_chat_id": data.get("telegram", {}).get("target_chat_id", ""),
+                "topic_id": "",
+            }
+        ]
+    for index in range(5):
+        route = routes[index] if index < len(routes) and isinstance(routes[index], dict) else {}
+        for key, default in (
+            ("name", ""),
+            ("enabled", True),
+            ("channel_name", ""),
+            ("channel_key", ""),
+            ("target_chat_id", ""),
+            ("topic_id", ""),
+        ):
+            value = route.get(key, default)
+            values[f"routes.{index}.{key}"] = (
+                str(value).lower() if key == "enabled" else str(value if value is not None else "")
+            )
+    # Compatibility keys keep older callers and config files round-trippable.
+    values["telegram.target_chat_id"] = values["routes.0.target_chat_id"]
+    values["mqtt.channel_name"] = values["routes.0.channel_name"]
+    values["mqtt.channel_key"] = values["routes.0.channel_key"]
     return values
 
 
@@ -178,11 +251,17 @@ def require_object_config(data: Any, source_name: str) -> dict[str, Any]:
 
 def build_config(values: dict[str, str]) -> dict[str, Any]:
     """Build and validate the JSON-compatible configuration from UI strings."""
+    def checked(path: str, default: str) -> bool:
+        return values.get(path, default).strip().lower() == "true"
+
     raw: dict[str, Any] = {
         "logging_level": values["logging_level"],
         "telegram": {
             "bot_token": values["telegram.bot_token"].strip(),
-            "target_chat_id": values["telegram.target_chat_id"].strip(),
+            "target_chat_id": values.get(
+                "telegram.target_chat_id",
+                values.get("routes.0.target_chat_id", ""),
+            ).strip(),
         },
         "mqtt": {
             "broker": values["mqtt.broker"].strip(),
@@ -190,15 +269,57 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
             "username": values["mqtt.username"],
             "password": values["mqtt.password"],
             "root_topic": values["mqtt.root_topic"].strip(),
-            "channel_name": values["mqtt.channel_name"].strip(),
-            "channel_key": values["mqtt.channel_key"].strip(),
+            "channel_name": values.get(
+                "mqtt.channel_name",
+                values.get("routes.0.channel_name", ""),
+            ).strip(),
+            "channel_key": values.get(
+                "mqtt.channel_key",
+                values.get("routes.0.channel_key", ""),
+            ).strip(),
         },
         "node": {
             "id": values["node.id"].strip(),
             "long_name": values["node.long_name"].strip(),
             "short_name": values["node.short_name"].strip(),
         },
+        "features": {
+            "statistics_enabled": checked("features.statistics_enabled", "true"),
+            "multi_route_enabled": checked("features.multi_route_enabled", "false"),
+            "status_api": {
+                "enabled": checked("features.status_api.enabled", "true")
+            },
+            "tray": {
+                "enabled": checked("features.tray.enabled", "false"),
+                "show_console": checked("features.tray.show_console", "true"),
+                "autostart": checked("features.tray.autostart", "false"),
+            },
+            "updates": {
+                "enabled": checked("features.updates.enabled", "false"),
+                "mode": values.get("features.updates.mode", "notify"),
+                "interval_hours": values.get(
+                    "features.updates.interval_hours", "24"
+                ),
+            },
+        },
     }
+    routes = []
+    for index in range(5):
+        prefix = f"routes.{index}."
+        if not values.get(prefix + "name", "").strip():
+            continue
+        routes.append(
+            {
+                "name": values[prefix + "name"].strip(),
+                "enabled": checked(prefix + "enabled", "true"),
+                "channel_name": values[prefix + "channel_name"].strip(),
+                "channel_key": values[prefix + "channel_key"].strip(),
+                "target_chat_id": values[prefix + "target_chat_id"].strip(),
+                "topic_id": values.get(prefix + "topic_id", "").strip() or None,
+            }
+        )
+    if routes:
+        raw["routes"] = routes
     validated = AppConfig.from_dict(raw)
 
     # Store numeric fields as JSON numbers and normalized non-secret text values.
@@ -207,6 +328,31 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
     raw["mqtt"]["port"] = validated.mqtt.port
     raw["mqtt"]["root_topic"] = validated.mqtt.root_topic
     raw["node"]["id"] = validated.node.node_id
+    raw["features"]["statistics_enabled"] = validated.features.statistics_enabled
+    raw["features"]["multi_route_enabled"] = validated.features.multi_route_enabled
+    raw["features"]["status_api"]["enabled"] = validated.features.status.enabled
+    raw["features"]["tray"] = {
+        "enabled": validated.features.tray.enabled,
+        "show_console": validated.features.tray.show_console,
+        "autostart": validated.features.tray.autostart,
+    }
+    raw["features"]["updates"] = {
+        "enabled": validated.features.updates.enabled,
+        "mode": validated.features.updates.mode,
+        "interval_hours": validated.features.updates.interval_hours,
+    }
+    if "routes" in raw:
+        raw["routes"] = [
+            {
+                "name": route.name,
+                "enabled": route.enabled,
+                "channel_name": route.channel_name,
+                "channel_key": raw["routes"][index]["channel_key"],
+                "target_chat_id": route.target_chat_id,
+                "topic_id": route.topic_id,
+            }
+            for index, route in enumerate(validated.routes)
+        ]
     return raw
 
 
@@ -232,8 +378,8 @@ class SettingsEditor(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(f"MeshTelegram Bridge 設定工具 v{__version__}")
-        self.geometry("760x720")
-        self.minsize(620, 600)
+        self.geometry("900x850")
+        self.minsize(760, 700)
 
         self.variables: dict[str, tk.StringVar] = {
             "logging_level": tk.StringVar(value="INFO")
@@ -244,10 +390,32 @@ class SettingsEditor(tk.Tk):
 
         self._build_ui()
         self.load()
+        self.after(500, self._refresh_runtime_status)
+        self.after(1000, self._maybe_check_updates)
 
     def _build_ui(self) -> None:
-        outer = ttk.Frame(self, padding=14)
-        outer.pack(fill="both", expand=True)
+        container = ttk.Frame(self)
+        container.pack(fill="both", expand=True)
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        outer = ttk.Frame(canvas, padding=14)
+        window_id = canvas.create_window((0, 0), window=outer, anchor="nw")
+
+        def update_scroll_region(event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def fill_width(event) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        outer.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", fill_width)
+        canvas.bind_all(
+            "<MouseWheel>",
+            lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"),
+        )
         outer.columnconfigure(0, weight=1)
 
         title = ttk.Label(
@@ -290,6 +458,103 @@ class SettingsEditor(tk.Tk):
                     )
             row += 1
 
+        feature_frame = ttk.LabelFrame(outer, text="功能設定", padding=10)
+        feature_frame.grid(row=row, column=0, sticky="ew", pady=4)
+        feature_options = (
+            ("features.statistics_enabled", "啟用執行統計"),
+            ("features.multi_route_enabled", "啟用多頻道路由"),
+            ("features.status_api.enabled", "啟用本機狀態 API"),
+            ("features.tray.enabled", "啟用系統匣"),
+            ("features.tray.show_console", "系統匣模式仍顯示主控台"),
+            ("features.tray.autostart", "登入 Windows 後自動啟動"),
+            ("features.updates.enabled", "啟用更新檢查"),
+        )
+        for index, (path, label) in enumerate(feature_options):
+            variable = tk.StringVar(value="false")
+            self.variables[path] = variable
+            ttk.Checkbutton(
+                feature_frame,
+                text=label,
+                variable=variable,
+                onvalue="true",
+                offvalue="false",
+            ).grid(row=index // 2, column=index % 2, sticky="w", padx=(0, 24), pady=2)
+        ttk.Label(feature_frame, text="更新方式").grid(row=4, column=0, sticky="w")
+        self.variables["features.updates.mode"] = tk.StringVar(value="notify")
+        ttk.Combobox(
+            feature_frame,
+            textvariable=self.variables["features.updates.mode"],
+            values=("notify", "download", "install"),
+            state="readonly",
+            width=12,
+        ).grid(row=4, column=0, sticky="e", padx=(75, 24))
+        ttk.Label(feature_frame, text="檢查間隔（小時）").grid(
+            row=4, column=1, sticky="w"
+        )
+        self.variables["features.updates.interval_hours"] = tk.StringVar(value="24")
+        ttk.Entry(
+            feature_frame,
+            textvariable=self.variables["features.updates.interval_hours"],
+            width=8,
+        ).grid(row=4, column=1, sticky="e")
+        row += 1
+
+        route_frame = ttk.LabelFrame(
+            outer,
+            text="多頻道路由（啟用多頻道路由後生效，最多 5 組）",
+            padding=8,
+        )
+        route_frame.grid(row=row, column=0, sticky="ew", pady=4)
+        route_frame.columnconfigure(0, weight=1)
+        route_tabs = ttk.Notebook(route_frame)
+        route_tabs.grid(row=0, column=0, sticky="ew")
+        route_fields = (
+            ("name", "路由名稱", False),
+            ("channel_name", "Meshtastic 頻道", False),
+            ("channel_key", "頻道金鑰", True),
+            ("target_chat_id", "Telegram 聊天室 ID", False),
+            ("topic_id", "Telegram 主題 ID（可留空）", False),
+        )
+        for index in range(5):
+            page = ttk.Frame(route_tabs, padding=8)
+            page.columnconfigure(1, weight=1)
+            route_tabs.add(page, text=f"路由 {index + 1}")
+            enabled_path = f"routes.{index}.enabled"
+            self.variables[enabled_path] = tk.StringVar(value="true")
+            ttk.Checkbutton(
+                page,
+                text="啟用此路由",
+                variable=self.variables[enabled_path],
+                onvalue="true",
+                offvalue="false",
+            ).grid(row=0, column=0, columnspan=2, sticky="w")
+            for field_row, (key, label, secret) in enumerate(route_fields, start=1):
+                path = f"routes.{index}.{key}"
+                self.variables[path] = tk.StringVar()
+                ttk.Label(page, text=label).grid(
+                    row=field_row, column=0, sticky="w", padx=(0, 10), pady=2
+                )
+                entry = ttk.Entry(
+                    page,
+                    textvariable=self.variables[path],
+                    show="•" if secret else "",
+                )
+                entry.grid(row=field_row, column=1, sticky="ew", pady=2)
+                if secret:
+                    self.secret_entries.append(entry)
+        row += 1
+
+        runtime_frame = ttk.LabelFrame(outer, text="即時執行狀態", padding=10)
+        runtime_frame.grid(row=row, column=0, sticky="ew", pady=4)
+        runtime_frame.columnconfigure(0, weight=1)
+        self.runtime_status = tk.StringVar(value="Bridge 未執行或狀態 API 未啟用")
+        ttk.Label(
+            runtime_frame,
+            textvariable=self.runtime_status,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w")
+        row += 1
+
         controls = ttk.Frame(outer)
         controls.grid(row=row, column=0, sticky="ew", pady=(10, 4))
         ttk.Checkbutton(
@@ -303,6 +568,12 @@ class SettingsEditor(tk.Tk):
         ttk.Button(controls, text="驗證", command=self.validate).pack(side="right")
         self.test_button = ttk.Button(controls, text="測試連線", command=self.test_connections)
         self.test_button.pack(side="right", padx=(8, 0))
+        self.update_button = ttk.Button(
+            controls,
+            text="立即檢查更新",
+            command=lambda: self.check_updates(manual=True),
+        )
+        self.update_button.pack(side="right", padx=(8, 0))
         ttk.Button(controls, text="開啟日誌資料夾", command=self.open_log_folder).pack(
             side="right", padx=(8, 0)
         )
@@ -326,7 +597,8 @@ class SettingsEditor(tk.Tk):
                 data = DEFAULT_CONFIG
             data = require_object_config(data, source_name)
             for key, value in flatten_config(data).items():
-                self.variables[key].set(value)
+                if key in self.variables:
+                    self.variables[key].set(value)
             self.status.set(f"已載入 {source_name}")
         except (ConfigError, OSError, json.JSONDecodeError) as exc:
             messagebox.showerror("載入失敗", str(exc), parent=self)
@@ -397,6 +669,154 @@ class SettingsEditor(tk.Tk):
         else:
             self.status.set("部分連線測試失敗")
             messagebox.showerror("連線測試完成", details, parent=self)
+
+    def _refresh_runtime_status(self) -> None:
+        try:
+            snapshot = fetch_status(STATUS_DISCOVERY_PATH)
+            telegram = snapshot.get("telegram", {})
+            routes = snapshot.get("routes", {})
+            stats = snapshot.get("statistics", {})
+            route_lines = [
+                f"{route.get('name', route_id)}：MQTT {route.get('mqtt_status', '未知')} "
+                f"({route.get('broker', '')})"
+                + (
+                    f"；錯誤：{route.get('last_error')}"
+                    if route.get("last_error")
+                    else ""
+                )
+                for route_id, route in routes.items()
+            ]
+            summary = (
+                f"Telegram：{telegram.get('status', '未知')} "
+                f"{telegram.get('bot_name') or ''}\n"
+                + ("\n".join(route_lines) or "MQTT：尚無路由")
+                + "\n"
+                + (
+                    "統計：TG→Mesh {telegram_to_mesh_success}、"
+                    "Mesh→TG {mesh_to_telegram_success}、未授權 {unauthorized_dropped}、"
+                    "過長 {oversized_dropped}、解密失敗 {decrypt_failed}、"
+                    "重複 {duplicate_packets}"
+                ).format_map({key: stats.get(key, 0) for key in (
+                    "telegram_to_mesh_success",
+                    "mesh_to_telegram_success",
+                    "unauthorized_dropped",
+                    "oversized_dropped",
+                    "decrypt_failed",
+                    "duplicate_packets",
+                )})
+            )
+            recent_error = telegram.get("last_error")
+            if recent_error:
+                summary += f"\n最近錯誤：{recent_error}"
+            self.runtime_status.set(summary)
+        except (StatusUnavailable, OSError, ValueError):
+            self.runtime_status.set("Bridge 未執行或狀態心跳已超過 5 秒")
+        finally:
+            self.after(2000, self._refresh_runtime_status)
+
+    def _maybe_check_updates(self) -> None:
+        try:
+            config = AppConfig.from_dict(build_config(self.current_values()))
+        except (ConfigError, KeyError):
+            return
+        updates = config.features.updates
+        if updates.enabled and should_check(UPDATE_STATE_PATH, updates.interval_hours):
+            self.check_updates(manual=False)
+
+    def check_updates(self, *, manual: bool) -> None:
+        try:
+            config = AppConfig.from_dict(build_config(self.current_values()))
+        except (ConfigError, KeyError) as exc:
+            if manual:
+                messagebox.showerror("無法檢查更新", str(exc), parent=self)
+            return
+        self.update_button.configure(state="disabled")
+        self.status.set("正在檢查 GitHub 正式 Release…")
+
+        def worker() -> None:
+            try:
+                release = fetch_latest_release()
+                record_check(UPDATE_STATE_PATH)
+                outcome = ("release", release, config.features.updates.mode)
+            except Exception as exc:
+                outcome = ("error", exc, config.features.updates.mode)
+            self.after(0, self._show_update_result, outcome, manual)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_update_result(self, outcome: tuple, manual: bool) -> None:
+        self.update_button.configure(state="normal")
+        kind, value, mode = outcome
+        if kind == "error":
+            self.status.set("更新檢查失敗")
+            if manual:
+                messagebox.showerror("更新檢查失敗", str(value), parent=self)
+            return
+        release = value
+        try:
+            newer = is_newer(release, __version__)
+        except UpdateError as exc:
+            self.status.set("Release 版本格式無效")
+            if manual:
+                messagebox.showerror("更新檢查失敗", str(exc), parent=self)
+            return
+        if not newer:
+            self.status.set(f"目前已是最新版 v{__version__}")
+            if manual:
+                messagebox.showinfo(
+                    "沒有可用更新",
+                    f"目前已是最新版 v{__version__}。",
+                    parent=self,
+                )
+            return
+        self.status.set(f"發現新版本 {release.version}")
+        if mode == "notify":
+            if messagebox.askyesno(
+                "發現新版本",
+                f"發現正式版本 {release.version}，是否開啟 Release 頁面？",
+                parent=self,
+            ):
+                webbrowser.open(release.page_url)
+            return
+        self.status.set(f"正在下載 {release.version}…")
+
+        def download_worker() -> None:
+            try:
+                files = download_portable_release(release, PROJECT_DIR)
+                result = ("downloaded", files, mode, release.version)
+            except Exception as exc:
+                result = ("download_error", exc, mode, release.version)
+            self.after(0, self._finish_update_download, result)
+
+        threading.Thread(target=download_worker, daemon=True).start()
+
+    def _finish_update_download(self, result: tuple) -> None:
+        kind, value, mode, version = result
+        if kind == "download_error":
+            self.status.set("更新下載失敗")
+            messagebox.showerror("更新下載失敗", str(value), parent=self)
+            return
+        files = value
+        if mode == "download":
+            self.status.set(f"{version} 已下載至 .update 資料夾")
+            messagebox.showinfo(
+                "更新已下載",
+                "兩個執行檔已完成 SHA-256 驗證並存放於 .update 資料夾。",
+                parent=self,
+            )
+            return
+        try:
+            schedule_portable_install(files, PROJECT_DIR)
+        except UpdateError as exc:
+            messagebox.showerror("無法自動安裝", str(exc), parent=self)
+            return
+        messagebox.showinfo(
+            "準備安裝",
+            "設定工具關閉後會更新可用的執行檔；若 Bridge 正在執行，"
+            "其檔案會在 Bridge 結束後完成替換。",
+            parent=self,
+        )
+        self.destroy()
 
 
 def main() -> None:

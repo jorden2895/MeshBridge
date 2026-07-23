@@ -59,6 +59,35 @@ class MqttServiceTests(unittest.TestCase):
         self.assertEqual(envelope.gateway_id, "!00000001")
         self.assertEqual(getattr(envelope.packet, "from"), 1)
 
+    def test_node_info_payload_uses_configured_names(self):
+        raw = valid_config()
+        raw["node"]["long_name"] = "台灣橋接器"
+        raw["node"]["short_name"] = "台橋"
+        service = MqttService(AppConfig.from_dict(raw))
+        service._mqtt_connected = True
+        service.client.is_connected = Mock(return_value=True)
+        service.client.publish = Mock(return_value=SimpleNamespace(rc=0))
+        service._schedule_node_info = Mock()
+
+        service._send_node_info()
+
+        published = service.client.publish.call_args.args[1]
+        envelope = mqtt_service_module.mqtt_pb2.ServiceEnvelope()
+        envelope.ParseFromString(published)
+        decrypted = mqtt_service_module.crypt_payload(
+            envelope.packet.encrypted,
+            service.key,
+            envelope.packet.id,
+            getattr(envelope.packet, "from"),
+        )
+        data = mqtt_service_module.mesh_pb2.Data()
+        data.ParseFromString(decrypted)
+        user = mqtt_service_module.mesh_pb2.User()
+        user.ParseFromString(data.payload)
+        self.assertEqual(user.long_name, "台灣橋接器")
+        self.assertEqual(user.short_name, "台橋")
+        self.assertEqual(user.id, service.node_name)
+
     def test_send_raises_when_disconnected(self):
         service = MqttService(AppConfig.from_dict(valid_config()))
         service.client.is_connected = Mock(return_value=False)
