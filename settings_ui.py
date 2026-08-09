@@ -7,8 +7,10 @@ import random
 import tempfile
 import tkinter as tk
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any
@@ -18,7 +20,13 @@ from telegram import Bot
 
 from app_paths import application_dir
 from config import AppConfig, ConfigError
-from status_client import StatusUnavailable, fetch_status
+from status_client import (
+    ChatSendError,
+    StatusUnavailable,
+    fetch_messages,
+    fetch_status,
+    send_chat_message,
+)
 from update_service import (
     UpdateError,
     download_portable_release,
@@ -37,6 +45,7 @@ EXAMPLE_PATH = PROJECT_DIR / "config.json.example"
 CONNECTION_TIMEOUT_SECONDS = 10
 STATUS_DISCOVERY_PATH = PROJECT_DIR / ".meshtelegram-status.json"
 UPDATE_STATE_PATH = PROJECT_DIR / ".meshtelegram-update-state.json"
+UI_MESSAGE_PREFIX = "[Bridge UI]: "
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "logging_level": "INFO",
@@ -387,14 +396,32 @@ class SettingsEditor(tk.Tk):
         self.secret_entries: list[ttk.Entry] = []
         self.show_secrets = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="就緒")
+        self.chat_status = tk.StringVar(value="正在連線 Bridge…")
+        self.chat_route = tk.StringVar()
+        self.chat_target = tk.StringVar(value="兩邊同時")
+        self.chat_byte_count = tk.StringVar(value="0 bytes")
+        self._chat_route_ids: dict[str, str] = {}
+        self._last_chat_message_id = 0
+        self._chat_polling = False
+        self._chat_connected = False
+        self._chat_feedback_until = 0.0
 
         self._build_ui()
         self.load()
         self.after(500, self._refresh_runtime_status)
+        self.after(700, self._poll_chat_messages)
         self.after(1000, self._maybe_check_updates)
 
     def _build_ui(self) -> None:
-        container = ttk.Frame(self)
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True)
+        chat_page = ttk.Frame(notebook)
+        settings_page = ttk.Frame(notebook)
+        notebook.add(chat_page, text="聊天")
+        notebook.add(settings_page, text="設定")
+        self._build_chat_ui(chat_page)
+
+        container = ttk.Frame(settings_page)
         container.pack(fill="both", expand=True)
         canvas = tk.Canvas(container, highlightthickness=0)
         scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
@@ -581,6 +608,90 @@ class SettingsEditor(tk.Tk):
         ttk.Separator(outer).grid(row=row + 1, column=0, sticky="ew", pady=(6, 8))
         ttk.Label(outer, textvariable=self.status).grid(row=row + 2, column=0, sticky="w")
 
+    def _build_chat_ui(self, parent: ttk.Frame) -> None:
+        outer = ttk.Frame(parent, padding=14)
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(2, weight=1)
+
+        ttk.Label(
+            outer,
+            text=f"MeshTelegram Bridge 聊天 v{__version__}",
+            font=("Segoe UI", 16, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(outer, textvariable=self.chat_status).grid(
+            row=1, column=0, sticky="w", pady=(4, 8)
+        )
+
+        history_frame = ttk.Frame(outer)
+        history_frame.grid(row=2, column=0, sticky="nsew")
+        history_frame.columnconfigure(0, weight=1)
+        history_frame.rowconfigure(0, weight=1)
+        self.chat_history = tk.Text(
+            history_frame,
+            wrap="word",
+            state="disabled",
+            font=("Segoe UI", 10),
+            padx=8,
+            pady=8,
+        )
+        history_scroll = ttk.Scrollbar(
+            history_frame, orient="vertical", command=self.chat_history.yview
+        )
+        self.chat_history.configure(yscrollcommand=history_scroll.set)
+        self.chat_history.grid(row=0, column=0, sticky="nsew")
+        history_scroll.grid(row=0, column=1, sticky="ns")
+        self.chat_history.tag_configure("meta", foreground="#666666")
+        self.chat_history.tag_configure("telegram", foreground="#1677b8")
+        self.chat_history.tag_configure("meshtastic", foreground="#17823b")
+        self.chat_history.tag_configure("bridge_ui", foreground="#8a4f00")
+
+        options = ttk.Frame(outer)
+        options.grid(row=3, column=0, sticky="ew", pady=(10, 6))
+        options.columnconfigure(1, weight=1)
+        ttk.Label(options, text="路由").grid(row=0, column=0, sticky="w")
+        self.chat_route_box = ttk.Combobox(
+            options,
+            textvariable=self.chat_route,
+            state="readonly",
+            width=28,
+        )
+        self.chat_route_box.grid(row=0, column=1, sticky="ew", padx=(8, 18))
+        self.chat_route_box.bind("<<ComboboxSelected>>", self._update_chat_byte_count)
+        ttk.Label(options, text="發送到").grid(row=0, column=2, sticky="w")
+        self.chat_target_box = ttk.Combobox(
+            options,
+            textvariable=self.chat_target,
+            values=("兩邊同時", "Meshtastic", "Telegram"),
+            state="readonly",
+            width=14,
+        )
+        self.chat_target_box.grid(row=0, column=3, sticky="e", padx=(8, 0))
+        self.chat_target_box.bind("<<ComboboxSelected>>", self._update_chat_byte_count)
+
+        compose = ttk.Frame(outer)
+        compose.grid(row=4, column=0, sticky="ew")
+        compose.columnconfigure(0, weight=1)
+        self.chat_input = tk.Text(compose, height=4, wrap="word", font=("Segoe UI", 10))
+        self.chat_input.grid(row=0, column=0, sticky="ew")
+        self.chat_input.bind("<KeyRelease>", self._update_chat_byte_count)
+        self.chat_input.bind("<Control-Return>", self._send_chat_from_shortcut)
+        side = ttk.Frame(compose)
+        side.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+        ttk.Label(side, textvariable=self.chat_byte_count).pack(anchor="e")
+        self.chat_send_button = ttk.Button(
+            side,
+            text="發送",
+            command=self.send_chat,
+            state="disabled",
+        )
+        self.chat_send_button.pack(side="bottom", fill="x")
+        ttk.Label(
+            outer,
+            text="Ctrl+Enter 發送；聊天內容僅保留於 Bridge 記憶體，重啟後清空。",
+            foreground="#666666",
+        ).grid(row=5, column=0, sticky="w", pady=(5, 0))
+
     def current_values(self) -> dict[str, str]:
         return {key: variable.get() for key, variable in self.variables.items()}
 
@@ -709,10 +820,154 @@ class SettingsEditor(tk.Tk):
             if recent_error:
                 summary += f"\n最近錯誤：{recent_error}"
             self.runtime_status.set(summary)
+            self._update_chat_routes(routes)
+            self._chat_connected = True
+            if time.monotonic() >= self._chat_feedback_until:
+                self.chat_status.set("Bridge 已連線，正在監看所有啟用路由")
+            self._update_chat_byte_count()
         except (StatusUnavailable, OSError, ValueError):
             self.runtime_status.set("Bridge 未執行或狀態心跳已超過 5 秒")
+            self._chat_connected = False
+            self.chat_status.set("Bridge 未執行或聊天 API 無法連線")
+            self.chat_send_button.configure(state="disabled")
         finally:
             self.after(2000, self._refresh_runtime_status)
+
+    def _update_chat_routes(self, routes: dict[str, dict[str, Any]]) -> None:
+        current_id = self._chat_route_ids.get(self.chat_route.get())
+        mapping = {
+            f"{route.get('name', route_id)} ({route_id})": route_id
+            for route_id, route in routes.items()
+        }
+        self._chat_route_ids = mapping
+        values = tuple(mapping.keys())
+        self.chat_route_box.configure(values=values)
+        selected = next(
+            (label for label, route_id in mapping.items() if route_id == current_id),
+            values[0] if values else "",
+        )
+        self.chat_route.set(selected)
+
+    def _poll_chat_messages(self) -> None:
+        if self._chat_polling:
+            self.after(1000, self._poll_chat_messages)
+            return
+        self._chat_polling = True
+        after_id = self._last_chat_message_id
+
+        def worker() -> None:
+            try:
+                result = fetch_messages(
+                    STATUS_DISCOVERY_PATH,
+                    after_id=after_id,
+                )
+                self.after(0, self._apply_chat_messages, result, None)
+            except Exception as exc:
+                self.after(0, self._apply_chat_messages, None, exc)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_chat_messages(self, result, error) -> None:
+        self._chat_polling = False
+        if error is None and result is not None:
+            for message in result.get("messages", []):
+                self._append_chat_message(message)
+            self._last_chat_message_id = max(
+                self._last_chat_message_id,
+                int(result.get("latest_id", 0)),
+            )
+        self.after(1000, self._poll_chat_messages)
+
+    def _append_chat_message(self, message: dict[str, Any]) -> None:
+        timestamp = datetime.fromtimestamp(float(message.get("timestamp", 0))).strftime("%H:%M:%S")
+        route_name = str(message.get("route_name", message.get("route_id", "")))
+        source = str(message.get("source", "unknown"))
+        source_names = {
+            "telegram": "Telegram",
+            "meshtastic": "Meshtastic",
+            "bridge_ui": "Bridge UI",
+        }
+        sender = str(message.get("sender", ""))
+        text = str(message.get("text", ""))
+        self.chat_history.configure(state="normal")
+        self.chat_history.insert(
+            "end",
+            f"[{timestamp}] {route_name} · {source_names.get(source, source)} · {sender}\n",
+            ("meta",),
+        )
+        self.chat_history.insert("end", text + "\n\n", (source,))
+        self.chat_history.configure(state="disabled")
+        self.chat_history.see("end")
+
+    def _update_chat_byte_count(self, event=None) -> None:
+        text = self.chat_input.get("1.0", "end-1c").strip()
+        uses_mesh = self.chat_target.get() in {"兩邊同時", "Meshtastic"}
+        payload = (UI_MESSAGE_PREFIX + text) if uses_mesh else text
+        byte_count = len(payload.encode("utf-8"))
+        limit = 233 if uses_mesh else 4000
+        self.chat_byte_count.set(f"{byte_count}/{limit} bytes")
+        valid = (
+            self._chat_connected
+            and bool(self._chat_route_ids.get(self.chat_route.get()))
+            and bool(text)
+            and byte_count <= limit
+        )
+        self.chat_send_button.configure(state="normal" if valid else "disabled")
+
+    def _send_chat_from_shortcut(self, event=None):
+        if str(self.chat_send_button.cget("state")) != "disabled":
+            self.send_chat()
+        return "break"
+
+    def send_chat(self) -> None:
+        route_id = self._chat_route_ids.get(self.chat_route.get())
+        text = self.chat_input.get("1.0", "end-1c").strip()
+        target = {
+            "兩邊同時": "both",
+            "Meshtastic": "meshtastic",
+            "Telegram": "telegram",
+        }.get(self.chat_target.get(), "both")
+        if not route_id or not text:
+            return
+        self.chat_send_button.configure(state="disabled")
+        self.chat_status.set("正在傳送訊息…")
+        self._chat_feedback_until = time.monotonic() + 20
+
+        def worker() -> None:
+            try:
+                result = send_chat_message(
+                    STATUS_DISCOVERY_PATH,
+                    route_id=route_id,
+                    text=text,
+                    target=target,
+                )
+                self.after(0, self._finish_chat_send, result, None)
+            except Exception as exc:
+                self.after(0, self._finish_chat_send, None, exc)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_chat_send(self, result, error) -> None:
+        if error is not None:
+            message = str(error) if isinstance(error, ChatSendError) else "訊息傳送失敗"
+            self.chat_status.set(message)
+            self._chat_feedback_until = time.monotonic() + 5
+            messagebox.showerror("訊息傳送失敗", message, parent=self)
+            self._update_chat_byte_count()
+            return
+        sent_names = {
+            "meshtastic": "Meshtastic",
+            "telegram": "Telegram",
+        }
+        sent = [sent_names.get(item, item) for item in result.get("sent", [])]
+        errors = result.get("errors", {})
+        summary = f"已傳送到：{'、'.join(sent)}"
+        if errors:
+            summary += "；部分失敗：" + "、".join(errors.values())
+        self.chat_status.set(summary)
+        self._chat_feedback_until = time.monotonic() + 5
+        self.chat_input.delete("1.0", "end")
+        self._update_chat_byte_count()
 
     def _maybe_check_updates(self) -> None:
         try:

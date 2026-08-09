@@ -17,6 +17,8 @@ Telegram 聊天室／主題之間，雙向轉送文字訊息。
   丟棄且不傳送。
 - 同時顯示終端日誌並寫入 UTF-8 輪替日誌；預設 `INFO` 不記錄訊息內容。
 - 提供繁體中文設定工具，可驗證設定並測試 Telegram 與 MQTT 連線。
+- 設定工具提供聊天分頁，可監看所有啟用路由，並發送文字到 Meshtastic、
+  Telegram 或同時傳送到兩邊。
 - 可設定最多五組一對一 Meshtastic 頻道與 Telegram 聊天室／主題路由。
 - 設定工具會顯示 MQTT、Telegram 即時狀態，以及本次執行的轉送與丟棄統計。
 - 可選用系統匣、登入後自動啟動與正式 Release 更新通知；預設皆不啟用。
@@ -31,6 +33,7 @@ Telegram 聊天室／主題之間，雙向轉送文字訊息。
 5. 按下「測試連線」檢查 Telegram Token 與 MQTT 帳號。這項測試不會啟動
    Bridge，也不會傳送訊息。
 6. 儲存設定後，啟動 `MeshTelegramBridge.exe`。
+7. Bridge 執行期間，可在設定工具的「聊天」分頁監看訊息，或選擇路由後發送。
 
 設定工具會在執行檔旁建立 `config.json`。此檔案包含 Telegram Bot Token、
 MQTT 密碼與 Meshtastic 頻道金鑰，請勿公開、分享或提交至 Git。
@@ -60,6 +63,12 @@ wildcard `+`、`#`。MQTT 帳號與密碼可同時留空以使用匿名 Broker�
 本機狀態 API 只監聽 `127.0.0.1`，使用每次啟動隨機產生的權杖；設定工具將
 超過五秒未更新的心跳視為離線。狀態內容不包含 Telegram Token、MQTT 帳號或
 頻道金鑰，最近錯誤中的已知敏感值也會遮蔽。所有統計在 Bridge 重啟後歸零。
+
+設定工具的「聊天」分頁會監看所有啟用路由，僅在 Bridge 記憶體保留最近 200
+筆訊息；不會寫入磁碟，Bridge 重啟後即清空。發送時可選擇 Meshtastic、
+Telegram 或兩邊同時，兩個目的地會分別回報結果。從介面發出的訊息會加上
+`[Bridge UI]: ` 前綴；傳送至 Meshtastic 時，包含此前綴的完整 UTF-8 內容不得
+超過 233 bytes。Bridge 未執行或停用本機狀態 API 時，聊天功能不可使用。
 
 系統匣模式整合於 `MeshTelegramBridge.exe`。雙擊圖示或選擇「設定」可開啟
 設定工具，選單也可結束 Bridge。Release 執行檔預設不建立主控台；未啟用系統匣

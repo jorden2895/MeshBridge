@@ -134,18 +134,19 @@ def main(argv: list[str] | None = None) -> int:
             )
             for index, route in enumerate(config.active_routes, start=1)
         )
-        if config.features.status.enabled:
-            status_server = StatusApiServer(
-                runtime_state,
-                application_dir() / ".meshtelegram-status.json",
-            )
-            status_server.start()
         telegram_app = create_application(
             config.telegram.bot_token,
             bindings,
             runtime_state=runtime_state,
         )
         request_stop = telegram_app.bot_data["request_stop"]
+        if config.features.status.enabled:
+            status_server = StatusApiServer(
+                runtime_state,
+                application_dir() / ".meshtelegram-status.json",
+                send_callback=telegram_app.bot_data["chat_dispatcher"],
+            )
+            status_server.start()
         sync_autostart(config.features.tray.autostart)
         if config.features.tray.enabled:
             tray_service = TrayService(request_stop)
