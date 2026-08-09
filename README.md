@@ -21,6 +21,8 @@ encrypted Meshtastic MQTT channels and authorized Telegram chats or topics.
   at the default `INFO` level.
 - Includes a Traditional Chinese settings application that validates the
   configuration and tests Telegram and MQTT connectivity.
+- Adds a chat tab to the settings application for monitoring active routes and
+  sending text to Meshtastic, Telegram, or both destinations.
 - Supports up to five one-to-one Meshtastic channel ↔ Telegram chat/topic routes.
 - Shows live MQTT/Telegram state and per-run forwarding/drop statistics.
 - Offers opt-in tray mode, Windows logon startup, and stable Release updates.
@@ -35,6 +37,8 @@ encrypted Meshtastic MQTT channels and authorized Telegram chats or topics.
 5. Select **測試連線** to check the Telegram token and MQTT credentials. This
    does not start the bridge or send a message.
 6. Save the configuration and start `MeshTelegramBridge.exe`.
+7. Keep the Bridge running, then use the **聊天** tab to monitor messages or
+   send text through a selected route.
 
 The settings application creates `config.json` beside the executable. Keep
 this file private: it contains the Telegram bot token, MQTT password, and
@@ -67,6 +71,14 @@ The status API listens only on `127.0.0.1` and uses a random token per run. The
 settings tool treats a heartbeat older than five seconds as offline. It never
 shows the bot token, MQTT username, or channel keys, and known secrets are
 redacted from recent errors. Statistics reset whenever the Bridge restarts.
+
+The settings tool's **聊天** tab monitors all active routes and keeps only the
+latest 200 messages in Bridge memory. Message history is never persisted and is
+cleared when the Bridge restarts. Select a route and send to Meshtastic,
+Telegram, or both independently. UI-originated messages use the
+`[Bridge UI]: ` prefix. Meshtastic-bound text, including that prefix, must fit
+the 233-byte UTF-8 payload limit. The chat tab is unavailable when the Bridge
+is stopped or the local status API is disabled.
 
 Tray mode is part of `MeshTelegramBridge.exe`; double-clicking opens the
 settings tool. Release builds hide the console by default in tray mode, with

@@ -221,6 +221,15 @@ class MqttService:
                     message_to_forward,
                 )
                 
+                if self.runtime_state is not None:
+                    self.runtime_state.record_message(
+                        route_id=self.route_id,
+                        source="meshtastic",
+                        sender=sender_id_hex,
+                        text=text_payload,
+                        destinations=("telegram",),
+                    )
+
                 if self.telegram_callback is None:
                     self._increment("other_dropped")
                     logger.error("Telegram callback is not configured; dropping received message.")
@@ -266,7 +275,7 @@ class MqttService:
             finally:
                 self._schedule_node_info(NODE_INFO_INTERVAL_SECONDS)
 
-    def send_message(self, text, destination_id=BROADCAST_NUM) -> None:
+    def send_message(self, text, destination_id=BROADCAST_NUM) -> bool:
         """Encodes and sends a text message to the Meshtastic network via MQTT."""
         payload = text.encode("utf-8")
         if len(payload) > MAX_MESHTASTIC_PAYLOAD_BYTES:
@@ -276,7 +285,7 @@ class MqttService:
                 len(payload),
                 MAX_MESHTASTIC_PAYLOAD_BYTES,
             )
-            return
+            return False
 
         logger.info("Sending %s-byte text message to Meshtastic destination %s", len(payload), destination_id)
 
@@ -292,6 +301,7 @@ class MqttService:
         self._increment("telegram_to_mesh_success")
         if self.runtime_state is not None:
             self.runtime_state.mark_forwarded()
+        return True
 
     def _publish_packet(self, data_packet, destination_id=BROADCAST_NUM):
         """Helper to wrap a Data packet in a MeshPacket and publish it."""
