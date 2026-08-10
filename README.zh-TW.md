@@ -1,8 +1,8 @@
-# MeshTelegram Bridge
+# MeshBridge
 
 [English](README.md) | 繁體中文
 
-MeshTelegram Bridge 可在加密的 Meshtastic MQTT 頻道、經授權的 Telegram
+MeshBridge 可在加密的 Meshtastic MQTT 頻道、經授權的 Telegram
 聊天室／主題與 Discord 文字頻道之間，雙向轉送文字訊息。Discord 為選用功能。
 
 ## 主要功能
@@ -26,19 +26,23 @@ MeshTelegram Bridge 可在加密的 Meshtastic MQTT 頻道、經授權的 Telegr
 
 ## 使用 Windows 執行檔快速開始
 
-1. 從[最新 GitHub Release](https://github.com/jorden2895/meshtelegram-bridge/releases/latest)
-   下載 `MeshTelegramBridge.exe` 與 `MeshTelegramBridgeSettings.exe`。
+1. 從[最新 GitHub Release](https://github.com/jorden2895/MeshBridge/releases/latest)
+   下載 `MeshBridge.exe` 與 `MeshBridgeSettings.exe`。
 2. 將兩個檔案放在同一個資料夾。
-3. 開啟 `MeshTelegramBridgeSettings.exe`。
+3. 開啟 `MeshBridgeSettings.exe`。
 4. 填入 Telegram、MQTT 與虛擬節點設定；若需 Discord，再啟用 Discord 並填入
    Bot Token 及各路由的頻道 ID，然後按下「驗證」。
 5. 按下「測試連線」檢查已啟用的服務。這項測試不會啟動
    Bridge，也不會傳送訊息。
-6. 儲存設定後，啟動 `MeshTelegramBridge.exe`。
+6. 儲存設定後，啟動 `MeshBridge.exe`。
 7. Bridge 執行期間，可在設定工具的「聊天」分頁監看訊息，或選擇路由後發送。
 
 設定工具會在執行檔旁建立 `config.json`。此檔案可能包含 Telegram／Discord
 Bot Token、MQTT 密碼與 Meshtastic 頻道金鑰，請勿公開、分享或提交至 Git。
+
+2.0 版將執行檔改名為 `MeshBridge.exe` 與 `MeshBridgeSettings.exe`，既有
+`config.json` 可直接沿用。從 1.x 升級時請手動下載這兩個新檔案，因為舊版自動
+安裝程式仍會尋找先前的資產檔名。
 
 ## 設定檔
 
@@ -81,7 +85,7 @@ Discord 來源使用 `[DC:@username]: ` 前綴，Telegram 來源使用 `[TG:UID]
 Discord 單則訊息上限為 2,000 字元；傳往 Meshtastic 時仍以包含前綴後的 233
 bytes 為上限。
 
-系統匣模式整合於 `MeshTelegramBridge.exe`。雙擊圖示或選擇「設定」可開啟
+系統匣模式整合於 `MeshBridge.exe`。雙擊圖示或選擇「設定」可開啟
 設定工具，選單也可結束 Bridge。Release 執行檔預設不建立主控台；未啟用系統匣
 或勾選「顯示主控台」時才顯示。
 
@@ -144,7 +148,7 @@ Copy-Item config.json.example config.json
 執行 Bridge：
 
 ```powershell
-.\run_meshtelegram_bridge.bat
+.\run_meshbridge.bat
 ```
 
 也可以執行 `python main.py`。按下 `Ctrl+C` 可安全停止程式。
@@ -157,7 +161,7 @@ python main.py --version
 
 ## 日誌
 
-Bridge 會在程式旁寫入 `MeshTelegramBridge.log`，單一檔案上限為 1 MiB，最多
+Bridge 會在程式旁寫入 `MeshBridge.log`，單一檔案上限為 1 MiB，最多
 保留五份；終端輸出仍會同時顯示。可從設定工具按下「開啟日誌資料夾」。
 
 預設 `INFO` 只記錄連線及轉送相關資訊，不包含訊息本文。`DEBUG` 可能包含訊息
@@ -197,7 +201,7 @@ Bridge 會在程式旁寫入 `MeshTelegramBridge.log`，單一檔案上限為 1 
 
 ## 授權與上游專案
 
-MeshTelegram Bridge 最初衍生自
+MeshBridge 最初衍生自
 [pdxlocations/connect](https://github.com/pdxlocations/connect)，該專案是透過
 MQTT 運作、不需要實體節點的 Meshtastic 用戶端。本專案已大幅修改為專用的
 Meshtastic、Telegram 與 Discord 文字橋接程式，並加入設定驗證、繁體中文設定

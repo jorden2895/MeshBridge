@@ -1,8 +1,8 @@
-# MeshTelegram Bridge
+# MeshBridge
 
 English | [繁體中文](README.zh-TW.md)
 
-MeshTelegram Bridge forwards text between encrypted Meshtastic MQTT channels,
+MeshBridge forwards text between encrypted Meshtastic MQTT channels,
 authorized Telegram chats or topics, and optional Discord text channels.
 
 ## Features
@@ -31,21 +31,26 @@ authorized Telegram chats or topics, and optional Discord text channels.
 
 ## Quick start with Windows executables
 
-1. Download `MeshTelegramBridge.exe` and `MeshTelegramBridgeSettings.exe` from
-   the [latest GitHub Release](https://github.com/jorden2895/meshtelegram-bridge/releases/latest).
+1. Download `MeshBridge.exe` and `MeshBridgeSettings.exe` from
+   the [latest GitHub Release](https://github.com/jorden2895/MeshBridge/releases/latest).
 2. Put both files in the same folder.
-3. Open `MeshTelegramBridgeSettings.exe`.
+3. Open `MeshBridgeSettings.exe`.
 4. Enter the Telegram, MQTT, and virtual-node settings. To use Discord, enable
    it and enter its bot token and a channel ID for each applicable route.
 5. Select **測試連線** to check every enabled service. This
    does not start the bridge or send a message.
-6. Save the configuration and start `MeshTelegramBridge.exe`.
+6. Save the configuration and start `MeshBridge.exe`.
 7. Keep the Bridge running, then use the **聊天** tab to monitor messages or
    send text through a selected route.
 
 The settings application creates `config.json` beside the executable. Keep
 this file private: it can contain Telegram and Discord bot tokens, the MQTT
 password, and Meshtastic channel keys.
+
+Version 2.0 renames the executables to `MeshBridge.exe` and
+`MeshBridgeSettings.exe`. Existing `config.json` files remain compatible. Users
+coming from a 1.x build should download the renamed files manually because the
+old automatic installer searches for the former asset names.
 
 ## Configuration
 
@@ -93,7 +98,7 @@ Discord-originated text uses the `[DC:@username]: ` prefix; Telegram-originated
 text uses `[TG:UID]: `. Discord messages are limited to 2,000 characters, while
 Meshtastic still applies its 233-byte limit after adding the prefix.
 
-Tray mode is part of `MeshTelegramBridge.exe`; double-clicking opens the
+Tray mode is part of `MeshBridge.exe`; double-clicking opens the
 settings tool. Release builds hide the console by default in tray mode, with
 an option to show it.
 
@@ -161,7 +166,7 @@ Open the settings application:
 Run the bridge:
 
 ```powershell
-.\run_meshtelegram_bridge.bat
+.\run_meshbridge.bat
 ```
 
 You can also run `python main.py`. Press `Ctrl+C` to stop it safely.
@@ -174,7 +179,7 @@ python main.py --version
 
 ## Logs
 
-The bridge writes `MeshTelegramBridge.log` beside the application and keeps up
+The bridge writes `MeshBridge.log` beside the application and keeps up
 to five 1 MiB files. Terminal output remains enabled. Use **開啟日誌資料夾**
 in the settings application to locate the files.
 
@@ -216,7 +221,7 @@ GitHub Release tag against it.
 
 ## License and upstream project
 
-MeshTelegram Bridge was originally derived from
+MeshBridge was originally derived from
 [pdxlocations/connect](https://github.com/pdxlocations/connect), a nodeless
 Meshtastic MQTT client. This project substantially changes the application into
 a dedicated Meshtastic/Telegram/Discord text bridge with configuration

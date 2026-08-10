@@ -12,5 +12,8 @@ dist/
 /config.json
 /.meshtelegram-status.json
 /.meshtelegram-update-state.json
+/.meshbridge-status.json
+/.meshbridge-update-state.json
 /.update/
 /MeshTelegramBridge.log*
+/MeshBridge.log*

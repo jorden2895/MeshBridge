@@ -1,4 +1,4 @@
-# MeshTelegram Bridge Telegram service
+# MeshBridge Telegram service
 
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if user is None or message is None:
         return
-    await message.reply_html(f"Hi {user.mention_html()}! I am MeshTelegram Bridge.")
+    await message.reply_html(f"Hi {user.mention_html()}! I am MeshBridge.")
     logger.info("User %s (%s) started the bot.", user.id, user.username)
     if update.effective_chat is not None:
         await message.reply_text(
@@ -252,7 +252,7 @@ def create_application(
             for service in reversed(started):
                 await asyncio.to_thread(service.stop)
             raise
-        logger.info("MeshTelegram Bridge 已就緒，可以開始轉發訊息。")
+        logger.info("MeshBridge 已就緒，可以開始轉發訊息。")
 
     async def post_shutdown(application: Application) -> None:
         stop_request.clear_loop()

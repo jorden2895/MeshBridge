@@ -19,7 +19,7 @@
     },
     "node": {
         "id": 2882392497,
-        "long_name": "MeshTelegram Bridge",
+        "long_name": "MeshBridge",
         "short_name": "TGBT"
     },
     "bridge_ui": {

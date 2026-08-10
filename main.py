@@ -1,4 +1,4 @@
-# MeshTelegram Bridge entry point
+# MeshBridge entry point
 
 import argparse
 import ctypes
@@ -25,7 +25,7 @@ from version import __version__
 
 
 logger = logging.getLogger(__name__)
-LOG_FILENAME = "MeshTelegramBridge.log"
+LOG_FILENAME = "MeshBridge.log"
 LOG_MAX_BYTES = 1_048_576
 LOG_BACKUP_COUNT = 5
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -92,7 +92,7 @@ def setup_logging(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="MeshTelegram Bridge")
+    parser = argparse.ArgumentParser(description="MeshBridge")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             *(route.channel_key.hex() for route in config.routes),
         )
         setup_logging(config.logging_level, secrets=secrets)
-        logger.info("正在啟動 MeshTelegram Bridge…")
+        logger.info("正在啟動 MeshBridge…")
         logger.info("版本：%s", __version__)
 
         runtime_state = RuntimeState(
@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         if config.features.status.enabled:
             status_server = StatusApiServer(
                 runtime_state,
-                application_dir() / ".meshtelegram-status.json",
+                application_dir() / ".meshbridge-status.json",
                 send_callback=telegram_app.bot_data["chat_dispatcher"],
             )
             status_server.start()
@@ -198,28 +198,28 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except ConfigError as exc:
         logger.error("設定錯誤：%s", exc)
-        logger.error("請使用 MeshTelegramBridgeSettings.exe 檢查並儲存設定。")
+        logger.error("請使用 MeshBridgeSettings.exe 檢查並儲存設定。")
         show_error_dialog(
-            "MeshTelegram Bridge 設定錯誤",
-            f"{exc}\n\n請使用 MeshTelegramBridgeSettings.exe 檢查並儲存設定。",
+            "MeshBridge 設定錯誤",
+            f"{exc}\n\n請使用 MeshBridgeSettings.exe 檢查並儲存設定。",
         )
         return 2
     except MqttServiceError as exc:
         logger.error("MQTT 啟動失敗：%s", exc)
-        show_error_dialog("MeshTelegram Bridge 啟動失敗", f"MQTT 啟動失敗：{exc}")
+        show_error_dialog("MeshBridge 啟動失敗", f"MQTT 啟動失敗：{exc}")
         return 3
     except DiscordServiceError as exc:
         logger.error("Discord 啟動失敗：%s", exc)
-        show_error_dialog("MeshTelegram Bridge 啟動失敗", f"Discord 啟動失敗：{exc}")
+        show_error_dialog("MeshBridge 啟動失敗", f"Discord 啟動失敗：{exc}")
         return 4
     except KeyboardInterrupt:
         logger.info("收到停止訊號，正在關閉程式。")
         return 0
     except Exception:
-        logger.exception("MeshTelegram Bridge 因未預期的錯誤而停止。")
+        logger.exception("MeshBridge 因未預期的錯誤而停止。")
         show_error_dialog(
-            "MeshTelegram Bridge 已停止",
-            "程式發生未預期的錯誤。請開啟 MeshTelegramBridge.log 查看詳細資訊。",
+            "MeshBridge 已停止",
+            "程式發生未預期的錯誤。請開啟 MeshBridge.log 查看詳細資訊。",
         )
         return 1
     finally:

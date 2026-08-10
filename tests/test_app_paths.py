@@ -8,7 +8,7 @@ from app_paths import application_dir
 
 class ApplicationPathTests(unittest.TestCase):
     def test_frozen_application_uses_executable_directory(self):
-        executable = r"C:\Portable\MeshTelegram Bridge\MeshTelegramBridge.exe"
+        executable = r"C:\Portable\MeshBridge\MeshBridge.exe"
         with patch.object(sys, "frozen", True, create=True), patch.object(
             sys, "executable", executable
         ):

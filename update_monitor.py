@@ -35,7 +35,7 @@ class UpdateMonitor:
         self.application_directory = application_directory
         self.notify = notify
         self.stop_application = stop_application
-        self.state_path = application_directory / ".meshtelegram-update-state.json"
+        self.state_path = application_directory / ".meshbridge-update-state.json"
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -62,20 +62,20 @@ class UpdateMonitor:
             logger.info("發現新的正式 Release：%s", release.version)
             if self.mode == "notify":
                 self.notify(
-                    "MeshTelegram Bridge 更新",
+                    "MeshBridge 更新",
                     f"發現正式版本 {release.version}，請開啟設定工具查看。",
                 )
                 return
             files = download_portable_release(release, self.application_directory)
             if self.mode == "download":
                 self.notify(
-                    "MeshTelegram Bridge 更新",
+                    "MeshBridge 更新",
                     f"{release.version} 已完成驗證並下載至 .update 資料夾。",
                 )
                 return
             schedule_portable_install(files, self.application_directory)
             self.notify(
-                "MeshTelegram Bridge 更新",
+                "MeshBridge 更新",
                 f"{release.version} 已下載，Bridge 將重新啟動以完成更新。",
             )
             self.stop_application()

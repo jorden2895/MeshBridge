@@ -44,8 +44,8 @@ PROJECT_DIR = application_dir()
 CONFIG_PATH = PROJECT_DIR / "config.json"
 EXAMPLE_PATH = PROJECT_DIR / "config.json.example"
 CONNECTION_TIMEOUT_SECONDS = 10
-STATUS_DISCOVERY_PATH = PROJECT_DIR / ".meshtelegram-status.json"
-UPDATE_STATE_PATH = PROJECT_DIR / ".meshtelegram-update-state.json"
+STATUS_DISCOVERY_PATH = PROJECT_DIR / ".meshbridge-status.json"
+UPDATE_STATE_PATH = PROJECT_DIR / ".meshbridge-update-state.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "logging_level": "INFO",
@@ -65,7 +65,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "node": {
         "id": 2882392497,
-        "long_name": "MeshTelegram Bridge",
+        "long_name": "MeshBridge",
         "short_name": "TGBT",
     },
     "bridge_ui": {"display_name": "Bridge UI"},
@@ -438,7 +438,7 @@ def save_config_atomic(data: dict[str, Any], path: Path = CONFIG_PATH) -> None:
 class SettingsEditor(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title(f"MeshTelegram Bridge 設定工具 v{__version__}")
+        self.title(f"MeshBridge 設定工具 v{__version__}")
         self.geometry("900x850")
         self.minsize(760, 700)
 
@@ -499,7 +499,7 @@ class SettingsEditor(tk.Tk):
 
         title = ttk.Label(
             outer,
-            text=f"MeshTelegram Bridge 設定工具 v{__version__}",
+            text=f"MeshBridge 設定工具 v{__version__}",
             font=("Segoe UI", 16, "bold"),
         )
         title.grid(row=0, column=0, sticky="w", pady=(0, 10))
@@ -672,7 +672,7 @@ class SettingsEditor(tk.Tk):
 
         ttk.Label(
             outer,
-            text=f"MeshTelegram Bridge 聊天 v{__version__}",
+            text=f"MeshBridge 聊天 v{__version__}",
             font=("Segoe UI", 16, "bold"),
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(outer, textvariable=self.chat_status).grid(
