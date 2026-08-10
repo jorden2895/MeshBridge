@@ -18,6 +18,9 @@
         "long_name": "MeshTelegram Bridge",
         "short_name": "TGBT"
     },
+    "bridge_ui": {
+        "display_name": "Bridge UI"
+    },
     "features": {
         "statistics_enabled": true,
         "multi_route_enabled": false,

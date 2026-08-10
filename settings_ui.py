@@ -45,7 +45,6 @@ EXAMPLE_PATH = PROJECT_DIR / "config.json.example"
 CONNECTION_TIMEOUT_SECONDS = 10
 STATUS_DISCOVERY_PATH = PROJECT_DIR / ".meshtelegram-status.json"
 UPDATE_STATE_PATH = PROJECT_DIR / ".meshtelegram-update-state.json"
-UI_MESSAGE_PREFIX = "[Bridge UI]: "
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "logging_level": "INFO",
@@ -67,6 +66,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "long_name": "MeshTelegram Bridge",
         "short_name": "TGBT",
     },
+    "bridge_ui": {"display_name": "Bridge UI"},
     "features": {
         "statistics_enabled": True,
         "multi_route_enabled": False,
@@ -99,6 +99,12 @@ FIELD_GROUPS = (
             ("node.id", "節點 ID", False),
             ("node.long_name", "完整名稱", False),
             ("node.short_name", "簡短名稱", False),
+        ),
+    ),
+    (
+        "介面設定",
+        (
+            ("bridge_ui.display_name", "Bridge UI 顯示名稱", False),
         ),
     ),
 )
@@ -193,7 +199,8 @@ def flatten_config(data: dict[str, Any]) -> dict[str, str]:
     for _, fields in FIELD_GROUPS:
         for path, _, _ in fields:
             section, key = path.split(".", 1)
-            values[path] = str(data.get(section, {}).get(key, ""))
+            default = DEFAULT_CONFIG.get(section, {}).get(key, "")
+            values[path] = str(data.get(section, {}).get(key, default))
     features = data.get("features", {})
     status = features.get("status_api", {})
     tray = features.get("tray", {})
@@ -292,6 +299,9 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
             "long_name": values["node.long_name"].strip(),
             "short_name": values["node.short_name"].strip(),
         },
+        "bridge_ui": {
+            "display_name": values.get("bridge_ui.display_name", "Bridge UI").strip(),
+        },
         "features": {
             "statistics_enabled": checked("features.statistics_enabled", "true"),
             "multi_route_enabled": checked("features.multi_route_enabled", "false"),
@@ -337,6 +347,7 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
     raw["mqtt"]["port"] = validated.mqtt.port
     raw["mqtt"]["root_topic"] = validated.mqtt.root_topic
     raw["node"]["id"] = validated.node.node_id
+    raw["bridge_ui"]["display_name"] = validated.bridge_ui.display_name
     raw["features"]["statistics_enabled"] = validated.features.statistics_enabled
     raw["features"]["multi_route_enabled"] = validated.features.multi_route_enabled
     raw["features"]["status_api"]["enabled"] = validated.features.status.enabled
@@ -477,6 +488,8 @@ class SettingsEditor(tk.Tk):
                 )
                 entry = ttk.Entry(frame, textvariable=variable, show="•" if secret else "")
                 entry.grid(row=field_row, column=1, sticky="ew", pady=3)
+                if path == "bridge_ui.display_name":
+                    variable.trace_add("write", lambda *_: self._update_chat_byte_count())
                 if secret:
                     self.secret_entries.append(entry)
                 if path == "node.id":
@@ -885,14 +898,15 @@ class SettingsEditor(tk.Tk):
         source_names = {
             "telegram": "Telegram",
             "meshtastic": "Meshtastic",
-            "bridge_ui": "Bridge UI",
         }
         sender = str(message.get("sender", ""))
+        source_name = sender if source == "bridge_ui" else source_names.get(source, source)
+        sender_suffix = "" if source == "bridge_ui" else f" · {sender}"
         text = str(message.get("text", ""))
         self.chat_history.configure(state="normal")
         self.chat_history.insert(
             "end",
-            f"[{timestamp}] {route_name} · {source_names.get(source, source)} · {sender}\n",
+            f"[{timestamp}] {route_name} · {source_name}{sender_suffix}\n",
             ("meta",),
         )
         self.chat_history.insert("end", text + "\n\n", (source,))
@@ -902,7 +916,9 @@ class SettingsEditor(tk.Tk):
     def _update_chat_byte_count(self, event=None) -> None:
         text = self.chat_input.get("1.0", "end-1c").strip()
         uses_mesh = self.chat_target.get() in {"兩邊同時", "Meshtastic"}
-        payload = (UI_MESSAGE_PREFIX + text) if uses_mesh else text
+        display_name = self.variables.get("bridge_ui.display_name")
+        name = display_name.get().strip() if display_name is not None else "Bridge UI"
+        payload = (f"[{name or 'Bridge UI'}]: " + text) if uses_mesh else text
         byte_count = len(payload.encode("utf-8"))
         limit = 233 if uses_mesh else 4000
         self.chat_byte_count.set(f"{byte_count}/{limit} bytes")
