@@ -298,7 +298,6 @@ class MqttService:
         except MqttServiceError:
             self._increment("disconnected_dropped")
             raise
-        self._increment("telegram_to_mesh_success")
         if self.runtime_state is not None:
             self.runtime_state.mark_forwarded()
         return True

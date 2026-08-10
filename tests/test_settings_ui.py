@@ -38,6 +38,8 @@ class SettingsUiDataTests(unittest.TestCase):
     def test_embedded_defaults_have_all_required_fields(self):
         values = flatten_config(DEFAULT_CONFIG)
         self.assertIn("telegram.bot_token", values)
+        self.assertIn("discord.bot_token", values)
+        self.assertEqual(values["discord.enabled"], "false")
         self.assertIn("mqtt.channel_key", values)
         self.assertIn("node.id", values)
 
@@ -58,6 +60,30 @@ class SettingsUiDataTests(unittest.TestCase):
         values = flatten_config(valid_config())
 
         self.assertEqual(values["bridge_ui.display_name"], "Bridge UI")
+
+    def test_discord_fields_round_trip_without_numeric_id_conversion(self):
+        raw = valid_config()
+        raw["discord"] = {"enabled": True, "bot_token": "discord-token"}
+        raw["routes"] = [
+            {
+                "name": "主要路由",
+                "enabled": True,
+                "channel_name": "Test",
+                "channel_key": "AQ==",
+                "target_chat_id": -100123,
+                "topic_id": None,
+                "discord_channel_id": "123456789012345678",
+            }
+        ]
+
+        result = build_config(flatten_config(raw))
+
+        self.assertTrue(result["discord"]["enabled"])
+        self.assertEqual(result["discord"]["bot_token"], "discord-token")
+        self.assertEqual(
+            result["routes"][0]["discord_channel_id"],
+            "123456789012345678",
+        )
 
     def test_atomic_save_writes_valid_utf8_json(self):
         data = build_config(flatten_config(valid_config()))
@@ -142,13 +168,17 @@ class SettingsUiDataTests(unittest.TestCase):
         showerror.assert_not_called()
 
     def test_connection_results_report_services_independently_and_mask_secrets(self):
-        config = AppConfig.from_dict(valid_config())
+        raw = valid_config()
+        raw["discord"] = {"enabled": False, "bot_token": "discord-secret"}
+        config = AppConfig.from_dict(raw)
 
         def telegram_probe(config):
             return "@bridge_bot"
 
         def mqtt_probe(config):
-            raise ConnectionError(f"password={config.mqtt.password}")
+            raise ConnectionError(
+                f"password={config.mqtt.password}; discord={config.discord.bot_token}"
+            )
 
         results = check_connections(config, telegram_probe, mqtt_probe)
 
@@ -156,7 +186,33 @@ class SettingsUiDataTests(unittest.TestCase):
         self.assertIn("@bridge_bot", results[0].message)
         self.assertFalse(results[1].succeeded)
         self.assertNotIn(config.mqtt.password, results[1].message)
+        self.assertNotIn(config.discord.bot_token, results[1].message)
         self.assertIn("***", results[1].message)
+
+    def test_enabled_discord_is_tested_independently(self):
+        raw = valid_config()
+        raw["discord"] = {"enabled": True, "bot_token": "discord-token"}
+        raw["routes"] = [
+            {
+                "name": "主要路由",
+                "enabled": True,
+                "channel_name": "Test",
+                "channel_key": "AQ==",
+                "target_chat_id": -100123,
+                "discord_channel_id": "123456789012345678",
+            }
+        ]
+        config = AppConfig.from_dict(raw)
+
+        results = check_connections(
+            config,
+            telegram_probe=lambda config: "@telegram_bot",
+            mqtt_probe=lambda config: "localhost:1883",
+            discord_probe=lambda config: "discord_bot",
+        )
+
+        self.assertEqual([result.service for result in results], ["Telegram", "MQTT", "Discord"])
+        self.assertTrue(all(result.succeeded for result in results))
 
 
 if __name__ == "__main__":

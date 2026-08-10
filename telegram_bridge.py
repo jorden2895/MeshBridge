@@ -7,7 +7,6 @@ import logging
 import sys
 import threading
 import warnings
-from dataclasses import dataclass
 from functools import partial
 from typing import Iterable
 
@@ -16,18 +15,18 @@ from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.warnings import PTBUserWarning
 
+from bridge_router import (
+    BridgeRouter,
+    LocalChatDispatcher,
+    RouteBinding,
+    forward_to_telegram,
+)
 from config import DEFAULT_BRIDGE_UI_DISPLAY_NAME, RouteConfig
-from mqtt_service import MAX_MESHTASTIC_PAYLOAD_BYTES, MqttService, MqttServiceError
-from runtime_state import ChatApiError, RuntimeState
+from mqtt_service import MqttService, MqttServiceError
+from runtime_state import RuntimeState
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class RouteBinding:
-    route: RouteConfig
-    mqtt_service: MqttService
 
 
 class ThreadSafeApplicationStop:
@@ -59,114 +58,6 @@ class ThreadSafeApplicationStop:
         with self._lock:
             self._loop = None
             self._pending = False
-
-
-class LocalChatDispatcher:
-    """Send UI chat commands from the local API thread to active routes."""
-
-    def __init__(
-        self,
-        bindings: tuple[RouteBinding, ...],
-        runtime_state: RuntimeState,
-        display_name: str = DEFAULT_BRIDGE_UI_DISPLAY_NAME,
-    ) -> None:
-        self.bindings = {binding.mqtt_service.route_id: binding for binding in bindings}
-        self.runtime_state = runtime_state
-        self.display_name = display_name
-        self._lock = threading.Lock()
-        self._loop = None
-        self._bot = None
-
-    def bind(self, loop, bot: Bot) -> None:
-        with self._lock:
-            self._loop = loop
-            self._bot = bot
-
-    def clear(self) -> None:
-        with self._lock:
-            self._loop = None
-            self._bot = None
-
-    def __call__(self, request: dict) -> dict:
-        route_id = str(request.get("route_id", ""))
-        target = str(request.get("target", "both")).lower()
-        text = str(request.get("text", "")).strip()
-        if route_id not in self.bindings:
-            raise ChatApiError("找不到指定路由")
-        if target not in {"meshtastic", "telegram", "both"}:
-            raise ChatApiError("發送目標無效")
-        if not text:
-            raise ChatApiError("訊息不可空白")
-        if len(text) > 4000:
-            raise ChatApiError("訊息過長")
-
-        formatted = f"[{self.display_name}]: {text}"
-        if target in {"meshtastic", "both"} and len(formatted.encode("utf-8")) > MAX_MESHTASTIC_PAYLOAD_BYTES:
-            raise ChatApiError(
-                f"包含 UI 標記後超過 Meshtastic {MAX_MESHTASTIC_PAYLOAD_BYTES} bytes 上限"
-            )
-
-        binding = self.bindings[route_id]
-        sent: list[str] = []
-        errors: dict[str, str] = {}
-        if target in {"meshtastic", "both"}:
-            try:
-                if binding.mqtt_service.send_message(formatted):
-                    sent.append("meshtastic")
-                else:
-                    errors["meshtastic"] = "訊息超過 Meshtastic 長度限制"
-            except Exception:
-                logger.exception("Bridge UI failed to send a message to Meshtastic.")
-                errors["meshtastic"] = "Meshtastic 傳送失敗"
-
-        if target in {"telegram", "both"}:
-            with self._lock:
-                loop = self._loop
-                bot = self._bot
-            if loop is None or loop.is_closed() or bot is None:
-                errors["telegram"] = "Telegram 尚未就緒"
-            else:
-                try:
-                    future = asyncio.run_coroutine_threadsafe(
-                        forward_to_telegram(
-                            bot,
-                            formatted,
-                            binding.route.target_chat_id,
-                            binding.route.topic_id,
-                        ),
-                        loop,
-                    )
-                    future.result(timeout=15)
-                    sent.append("telegram")
-                except Exception:
-                    logger.exception("Bridge UI failed to send a message to Telegram.")
-                    errors["telegram"] = "Telegram 傳送失敗"
-
-        if not sent:
-            raise ChatApiError("；".join(errors.values()) or "訊息無法傳送")
-        self.runtime_state.record_message(
-            route_id=route_id,
-            source="bridge_ui",
-            sender=self.display_name,
-            text=text,
-            destinations=tuple(sent),
-        )
-        return {"sent": sent, "errors": errors}
-
-
-async def forward_to_telegram(
-    bot: Bot,
-    message_text: str,
-    chat_id: int,
-    topic_id: int | None = None,
-) -> None:
-    """Forward one Meshtastic message through the application's shared bot."""
-    await bot.send_message(
-        chat_id=chat_id,
-        text=message_text,
-        message_thread_id=topic_id,
-    )
-    logger.info("Forwarded Meshtastic message to the configured Telegram chat.")
 
 
 def is_authorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -262,8 +153,23 @@ async def handle_message(
             runtime_state.increment("unauthorized_dropped")
         return
 
-    formatted_text = f"[TG:{user.id}]: {message.text}"
     logger.info("Forwarding Telegram message from user %s to Meshtastic.", user.id)
+    router = context.bot_data.get("router")
+    if router is not None and mqtt_service is None:
+        try:
+            await router.forward_telegram(
+                binding,
+                user_id=user.id,
+                username=getattr(user, "username", None),
+                text=message.text,
+            )
+        except MqttServiceError as exc:
+            logger.error("Failed to forward Telegram message to Meshtastic: %s", exc)
+            await message.reply_text(
+                "Message could not be sent to Meshtastic. Please try again later."
+            )
+        return
+    formatted_text = f"[TG:{user.id}]: {message.text}"
     sent = False
     try:
         sent = await asyncio.to_thread(
@@ -274,6 +180,8 @@ async def handle_message(
         logger.error("Failed to forward Telegram message to Meshtastic: %s", exc)
         await message.reply_text("Message could not be sent to Meshtastic. Please try again later.")
     if runtime_state is not None:
+        if sent:
+            runtime_state.increment("telegram_to_mesh_success")
         username = getattr(user, "username", None)
         runtime_state.record_message(
             route_id=binding.mqtt_service.route_id,
@@ -311,8 +219,8 @@ def create_application(
         nonlocal telegram_loop, heartbeat_task
         telegram_loop = asyncio.get_running_loop()
         stop_request.bind_loop(telegram_loop)
-        if chat_dispatcher is not None:
-            chat_dispatcher.bind(telegram_loop, application.bot)
+        if router is not None:
+            router.bind_telegram(telegram_loop, application.bot)
         bot_name = application.bot.username or str(application.bot.id)
         logger.info("Telegram Bot 啟動成功：%s", bot_name)
         if runtime_state is not None:
@@ -328,45 +236,10 @@ def create_application(
         started: list[MqttService] = []
         try:
             for binding in bindings:
-                route = binding.route
-
-                def forward_from_mqtt(
-                    message_text: str,
-                    *,
-                    selected_route: RouteConfig = route,
-                ) -> None:
-                    if telegram_loop is None or telegram_loop.is_closed():
-                        logger.error(
-                            "Telegram event loop is unavailable; dropping Meshtastic message."
-                        )
-                        if runtime_state is not None:
-                            runtime_state.increment("other_dropped")
-                        return
-                    future = asyncio.run_coroutine_threadsafe(
-                        forward_to_telegram(
-                            application.bot,
-                            message_text,
-                            selected_route.target_chat_id,
-                            selected_route.topic_id,
-                        ),
-                        telegram_loop,
+                if router is not None:
+                    binding.mqtt_service.set_telegram_callback(
+                        partial(router.forward_meshtastic, binding.mqtt_service.route_id)
                     )
-
-                    def log_result(completed) -> None:
-                        try:
-                            completed.result()
-                            if runtime_state is not None:
-                                runtime_state.increment("mesh_to_telegram_success")
-                                runtime_state.mark_forwarded()
-                        except Exception as exc:
-                            logger.exception("Failed to forward Meshtastic message to Telegram.")
-                            if runtime_state is not None:
-                                runtime_state.set_telegram("error", error=str(exc))
-                                runtime_state.increment("other_dropped")
-
-                    future.add_done_callback(log_result)
-
-                binding.mqtt_service.set_telegram_callback(forward_from_mqtt)
 
                 def fatal_mqtt(error: str) -> None:
                     logger.error("MQTT 發生致命錯誤：%s", error)
@@ -383,8 +256,8 @@ def create_application(
 
     async def post_shutdown(application: Application) -> None:
         stop_request.clear_loop()
-        if chat_dispatcher is not None:
-            chat_dispatcher.clear()
+        if router is not None:
+            router.clear_telegram()
         if heartbeat_task is not None:
             heartbeat_task.cancel()
             try:
@@ -415,12 +288,10 @@ def create_application(
     application.bot_data["route_bindings"] = bindings
     stop_request = ThreadSafeApplicationStop(application.stop_running)
     application.bot_data["request_stop"] = stop_request
-    chat_dispatcher = (
-        LocalChatDispatcher(bindings, runtime_state, ui_display_name)
-        if runtime_state is not None
-        else None
-    )
-    application.bot_data["chat_dispatcher"] = chat_dispatcher
+    router_state = runtime_state or RuntimeState(statistics_enabled=False)
+    router = BridgeRouter(bindings, router_state, ui_display_name)
+    application.bot_data["router"] = router
+    application.bot_data["chat_dispatcher"] = router if runtime_state is not None else None
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(

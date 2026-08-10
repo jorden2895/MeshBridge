@@ -16,6 +16,7 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 import paho.mqtt.client as mqtt
+import discord
 from telegram import Bot
 
 from app_paths import application_dir
@@ -52,6 +53,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "bot_token": "YOUR_TELEGRAM_BOT_TOKEN_HERE",
         "target_chat_id": "YOUR_TARGET_CHAT_ID_HERE",
     },
+    "discord": {"enabled": False, "bot_token": ""},
     "mqtt": {
         "broker": "mqtt.meshtastic.org",
         "port": 1883,
@@ -81,6 +83,12 @@ FIELD_GROUPS = (
         "Telegram 設定",
         (
             ("telegram.bot_token", "機器人權杖", True),
+        ),
+    ),
+    (
+        "Discord 設定",
+        (
+            ("discord.bot_token", "機器人權杖", True),
         ),
     ),
     (
@@ -168,18 +176,35 @@ def probe_mqtt(config: AppConfig, timeout: float = CONNECTION_TIMEOUT_SECONDS) -
         client.loop_stop()
 
 
+def probe_discord(config: AppConfig) -> str:
+    async def get_identity() -> str:
+        client = discord.Client(intents=discord.Intents.none())
+        try:
+            await client.login(config.discord.bot_token)
+            return str(client.user)
+        finally:
+            await client.close()
+
+    return asyncio.run(get_identity())
+
+
 def check_connections(
     config: AppConfig,
     telegram_probe=probe_telegram,
     mqtt_probe=probe_mqtt,
+    discord_probe=probe_discord,
 ) -> list[ConnectionTestResult]:
     results: list[ConnectionTestResult] = []
     secrets = (
         config.telegram.bot_token,
+        config.discord.bot_token,
         config.mqtt.password,
         config.mqtt.channel_key.hex(),
     )
-    for service, probe in (("Telegram", telegram_probe), ("MQTT", mqtt_probe)):
+    probes = [("Telegram", telegram_probe), ("MQTT", mqtt_probe)]
+    if config.discord.enabled:
+        probes.append(("Discord", discord_probe))
+    for service, probe in probes:
         try:
             detail = probe(config)
             results.append(ConnectionTestResult(service, True, f"連線成功：{detail}"))
@@ -202,6 +227,7 @@ def flatten_config(data: dict[str, Any]) -> dict[str, str]:
             default = DEFAULT_CONFIG.get(section, {}).get(key, "")
             values[path] = str(data.get(section, {}).get(key, default))
     features = data.get("features", {})
+    discord = data.get("discord", {})
     status = features.get("status_api", {})
     tray = features.get("tray", {})
     updates = features.get("updates", {})
@@ -210,6 +236,7 @@ def flatten_config(data: dict[str, Any]) -> dict[str, str]:
             "features.statistics_enabled": str(
                 features.get("statistics_enabled", True)
             ).lower(),
+            "discord.enabled": str(discord.get("enabled", False)).lower(),
             "features.multi_route_enabled": str(
                 features.get("multi_route_enabled", False)
             ).lower(),
@@ -236,6 +263,7 @@ def flatten_config(data: dict[str, Any]) -> dict[str, str]:
                 "channel_key": data.get("mqtt", {}).get("channel_key", ""),
                 "target_chat_id": data.get("telegram", {}).get("target_chat_id", ""),
                 "topic_id": "",
+                "discord_channel_id": "",
             }
         ]
     for index in range(5):
@@ -247,6 +275,7 @@ def flatten_config(data: dict[str, Any]) -> dict[str, str]:
             ("channel_key", ""),
             ("target_chat_id", ""),
             ("topic_id", ""),
+            ("discord_channel_id", ""),
         ):
             value = route.get(key, default)
             values[f"routes.{index}.{key}"] = (
@@ -278,6 +307,10 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
                 "telegram.target_chat_id",
                 values.get("routes.0.target_chat_id", ""),
             ).strip(),
+        },
+        "discord": {
+            "enabled": checked("discord.enabled", "false"),
+            "bot_token": values.get("discord.bot_token", "").strip(),
         },
         "mqtt": {
             "broker": values["mqtt.broker"].strip(),
@@ -335,6 +368,9 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
                 "channel_key": values[prefix + "channel_key"].strip(),
                 "target_chat_id": values[prefix + "target_chat_id"].strip(),
                 "topic_id": values.get(prefix + "topic_id", "").strip() or None,
+                "discord_channel_id": values.get(
+                    prefix + "discord_channel_id", ""
+                ).strip() or None,
             }
         )
     if routes:
@@ -344,6 +380,10 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
     # Store numeric fields as JSON numbers and normalized non-secret text values.
     raw["logging_level"] = validated.logging_level
     raw["telegram"]["target_chat_id"] = validated.telegram.target_chat_id
+    raw["discord"] = {
+        "enabled": validated.discord.enabled,
+        "bot_token": validated.discord.bot_token,
+    }
     raw["mqtt"]["port"] = validated.mqtt.port
     raw["mqtt"]["root_topic"] = validated.mqtt.root_topic
     raw["node"]["id"] = validated.node.node_id
@@ -370,6 +410,7 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
                 "channel_key": raw["routes"][index]["channel_key"],
                 "target_chat_id": route.target_chat_id,
                 "topic_id": route.topic_id,
+                "discord_channel_id": route.discord_channel_id,
             }
             for index, route in enumerate(validated.routes)
         ]
@@ -409,7 +450,7 @@ class SettingsEditor(tk.Tk):
         self.status = tk.StringVar(value="就緒")
         self.chat_status = tk.StringVar(value="正在連線 Bridge…")
         self.chat_route = tk.StringVar()
-        self.chat_target = tk.StringVar(value="兩邊同時")
+        self.chat_target = tk.StringVar(value="全部平台")
         self.chat_byte_count = tk.StringVar(value="0 bytes")
         self._chat_route_ids: dict[str, str] = {}
         self._last_chat_message_id = 0
@@ -501,6 +542,7 @@ class SettingsEditor(tk.Tk):
         feature_frame = ttk.LabelFrame(outer, text="功能設定", padding=10)
         feature_frame.grid(row=row, column=0, sticky="ew", pady=4)
         feature_options = (
+            ("discord.enabled", "啟用 Discord 橋接"),
             ("features.statistics_enabled", "啟用執行統計"),
             ("features.multi_route_enabled", "啟用多頻道路由"),
             ("features.status_api.enabled", "啟用本機狀態 API"),
@@ -554,6 +596,7 @@ class SettingsEditor(tk.Tk):
             ("channel_key", "頻道金鑰", True),
             ("target_chat_id", "Telegram 聊天室 ID", False),
             ("topic_id", "Telegram 主題 ID（可留空）", False),
+            ("discord_channel_id", "Discord 頻道 ID（可留空）", False),
         )
         for index in range(5):
             page = ttk.Frame(route_tabs, padding=8)
@@ -657,6 +700,7 @@ class SettingsEditor(tk.Tk):
         self.chat_history.tag_configure("meta", foreground="#666666")
         self.chat_history.tag_configure("telegram", foreground="#1677b8")
         self.chat_history.tag_configure("meshtastic", foreground="#17823b")
+        self.chat_history.tag_configure("discord", foreground="#5865f2")
         self.chat_history.tag_configure("bridge_ui", foreground="#8a4f00")
 
         options = ttk.Frame(outer)
@@ -675,7 +719,7 @@ class SettingsEditor(tk.Tk):
         self.chat_target_box = ttk.Combobox(
             options,
             textvariable=self.chat_target,
-            values=("兩邊同時", "Meshtastic", "Telegram"),
+            values=("全部平台", "Meshtastic", "Telegram", "Discord"),
             state="readonly",
             width=14,
         )
@@ -774,7 +818,8 @@ class SettingsEditor(tk.Tk):
             return
 
         self.test_button.configure(state="disabled")
-        self.status.set("正在測試 Telegram 與 MQTT 連線…")
+        service_names = "Telegram、MQTT 與 Discord" if config.discord.enabled else "Telegram 與 MQTT"
+        self.status.set(f"正在測試 {service_names} 連線…")
 
         def worker() -> None:
             results = check_connections(config)
@@ -788,7 +833,7 @@ class SettingsEditor(tk.Tk):
             f"{result.service}：{result.message}" for result in results
         )
         if all(result.succeeded for result in results):
-            self.status.set("Telegram 與 MQTT 連線測試成功")
+            self.status.set("所有連線測試成功")
             messagebox.showinfo("連線測試完成", details, parent=self)
         else:
             self.status.set("部分連線測試失敗")
@@ -798,6 +843,7 @@ class SettingsEditor(tk.Tk):
         try:
             snapshot = fetch_status(STATUS_DISCOVERY_PATH)
             telegram = snapshot.get("telegram", {})
+            discord = snapshot.get("discord", {})
             routes = snapshot.get("routes", {})
             stats = snapshot.get("statistics", {})
             route_lines = [
@@ -813,16 +859,21 @@ class SettingsEditor(tk.Tk):
             summary = (
                 f"Telegram：{telegram.get('status', '未知')} "
                 f"{telegram.get('bot_name') or ''}\n"
+                f"Discord：{discord.get('status', '未啟用')} "
+                f"{discord.get('bot_name') or ''}\n"
                 + ("\n".join(route_lines) or "MQTT：尚無路由")
                 + "\n"
                 + (
                     "統計：TG→Mesh {telegram_to_mesh_success}、"
-                    "Mesh→TG {mesh_to_telegram_success}、未授權 {unauthorized_dropped}、"
+                    "Mesh→TG {mesh_to_telegram_success}、DC→Mesh {discord_to_mesh_success}、"
+                    "Mesh→DC {mesh_to_discord_success}、未授權 {unauthorized_dropped}、"
                     "過長 {oversized_dropped}、解密失敗 {decrypt_failed}、"
                     "重複 {duplicate_packets}"
                 ).format_map({key: stats.get(key, 0) for key in (
                     "telegram_to_mesh_success",
                     "mesh_to_telegram_success",
+                    "discord_to_mesh_success",
+                    "mesh_to_discord_success",
                     "unauthorized_dropped",
                     "oversized_dropped",
                     "decrypt_failed",
@@ -830,6 +881,7 @@ class SettingsEditor(tk.Tk):
                 )})
             )
             recent_error = telegram.get("last_error")
+            recent_error = recent_error or discord.get("last_error")
             if recent_error:
                 summary += f"\n最近錯誤：{recent_error}"
             self.runtime_status.set(summary)
@@ -898,6 +950,7 @@ class SettingsEditor(tk.Tk):
         source_names = {
             "telegram": "Telegram",
             "meshtastic": "Meshtastic",
+            "discord": "Discord",
         }
         sender = str(message.get("sender", ""))
         source_name = sender if source == "bridge_ui" else source_names.get(source, source)
@@ -915,12 +968,13 @@ class SettingsEditor(tk.Tk):
 
     def _update_chat_byte_count(self, event=None) -> None:
         text = self.chat_input.get("1.0", "end-1c").strip()
-        uses_mesh = self.chat_target.get() in {"兩邊同時", "Meshtastic"}
+        uses_mesh = self.chat_target.get() in {"全部平台", "Meshtastic"}
         display_name = self.variables.get("bridge_ui.display_name")
         name = display_name.get().strip() if display_name is not None else "Bridge UI"
         payload = (f"[{name or 'Bridge UI'}]: " + text) if uses_mesh else text
         byte_count = len(payload.encode("utf-8"))
-        limit = 233 if uses_mesh else 4000
+        uses_discord = self.chat_target.get() in {"全部平台", "Discord"}
+        limit = 233 if uses_mesh else (2000 if uses_discord else 4000)
         self.chat_byte_count.set(f"{byte_count}/{limit} bytes")
         valid = (
             self._chat_connected
@@ -939,10 +993,11 @@ class SettingsEditor(tk.Tk):
         route_id = self._chat_route_ids.get(self.chat_route.get())
         text = self.chat_input.get("1.0", "end-1c").strip()
         target = {
-            "兩邊同時": "both",
+            "全部平台": "all",
             "Meshtastic": "meshtastic",
             "Telegram": "telegram",
-        }.get(self.chat_target.get(), "both")
+            "Discord": "discord",
+        }.get(self.chat_target.get(), "all")
         if not route_id or not text:
             return
         self.chat_send_button.configure(state="disabled")

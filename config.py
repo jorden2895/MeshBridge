@@ -81,6 +81,12 @@ class TelegramConfig:
 
 
 @dataclass(frozen=True)
+class DiscordConfig:
+    enabled: bool = False
+    bot_token: str = ""
+
+
+@dataclass(frozen=True)
 class MqttConfig:
     broker: str
     port: int
@@ -111,6 +117,7 @@ class RouteConfig:
     channel_key: bytes
     target_chat_id: int
     topic_id: int | None = None
+    discord_channel_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +152,7 @@ class FeatureConfig:
 class AppConfig:
     logging_level: str
     telegram: TelegramConfig
+    discord: DiscordConfig
     mqtt: MqttConfig
     node: NodeConfig
     bridge_ui: BridgeUiConfig
@@ -169,12 +177,17 @@ class AppConfig:
             raise ConfigError("「logging_level」必須是 DEBUG、INFO、WARNING、ERROR 或 CRITICAL")
 
         telegram_raw = _object(raw, "telegram")
+        discord_raw = _object(raw, "discord", required=False)
         mqtt_raw = _object(raw, "mqtt")
         node_raw = _object(raw, "node")
         bridge_ui_raw = _object(raw, "bridge_ui", required=False)
 
         bot_token = _required_text(telegram_raw, "bot_token", "telegram")
         legacy_target = telegram_raw.get("target_chat_id")
+        discord_enabled = _bool(discord_raw.get("enabled"), "discord.enabled", False)
+        discord_bot_token = str(discord_raw.get("bot_token", "")).strip()
+        if discord_enabled and not discord_bot_token:
+            raise ConfigError("啟用 Discord 時，「discord.bot_token」為必填欄位")
 
         broker = _required_text(mqtt_raw, "broker", "mqtt")
         port = _integer(_required(mqtt_raw, "port", "mqtt"), "mqtt.port")
@@ -253,6 +266,18 @@ class AppConfig:
                     if topic_value in (None, "")
                     else _integer(topic_value, f"{path}.topic_id")
                 )
+                discord_channel_value = route_raw.get("discord_channel_id")
+                discord_channel_id = (
+                    None
+                    if discord_channel_value in (None, "")
+                    else str(discord_channel_value).strip()
+                )
+                if discord_channel_id is not None and (
+                    not discord_channel_id.isascii()
+                    or not discord_channel_id.isdecimal()
+                    or int(discord_channel_id) <= 0
+                ):
+                    raise ConfigError(f"「{path}.discord_channel_id」必須是正整數字串")
                 parsed_routes.append(
                     RouteConfig(
                         name=name,
@@ -264,11 +289,13 @@ class AppConfig:
                             f"{path}.target_chat_id",
                         ),
                         topic_id=topic_id,
+                        discord_channel_id=discord_channel_id,
                     )
                 )
             routes = tuple(parsed_routes)
             channel_endpoints: set[str] = set()
             telegram_endpoints: set[tuple[int, int | None]] = set()
+            discord_endpoints: set[str] = set()
             route_names: set[str] = set()
             for route in routes:
                 normalized_name = route.name.casefold()
@@ -279,9 +306,21 @@ class AppConfig:
                     raise ConfigError("每組路由的 Meshtastic 頻道必須不同")
                 if telegram_endpoint in telegram_endpoints:
                     raise ConfigError("每組路由的 Telegram 聊天室／主題組合必須不同")
+                if (
+                    route.discord_channel_id is not None
+                    and route.discord_channel_id in discord_endpoints
+                ):
+                    raise ConfigError("每組路由的 Discord 頻道必須不同")
                 route_names.add(normalized_name)
                 channel_endpoints.add(route.channel_name.casefold())
                 telegram_endpoints.add(telegram_endpoint)
+                if route.discord_channel_id is not None:
+                    discord_endpoints.add(route.discord_channel_id)
+
+        if discord_enabled and not any(
+            route.enabled and route.discord_channel_id for route in routes
+        ):
+            raise ConfigError("啟用 Discord 時，至少一組啟用路由必須設定 Discord 頻道 ID")
 
         first_route = routes[0]
         features_raw = _object(raw, "features", required=False)
@@ -347,6 +386,10 @@ class AppConfig:
             telegram=TelegramConfig(
                 bot_token=bot_token,
                 target_chat_id=first_route.target_chat_id,
+            ),
+            discord=DiscordConfig(
+                enabled=discord_enabled,
+                bot_token=discord_bot_token,
             ),
             mqtt=MqttConfig(
                 broker=broker,
