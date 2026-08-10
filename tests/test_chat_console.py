@@ -4,10 +4,13 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+from concurrent.futures import Future
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from bridge_router import BridgeRouter
 import mqtt_service as mqtt_service_module
 from config import AppConfig
 from meshtastic_codec import channel_hash, crypt_payload
@@ -200,6 +203,142 @@ class LocalChatDispatcherTests(unittest.TestCase):
                 {"route_id": "route-1", "text": "測" * 74, "target": "meshtastic"}
             )
 
+    def test_rejects_oversized_discord_only_message(self):
+        route = replace(make_binding().route, discord_channel_id="123456789012345678")
+        binding = RouteBinding(route, make_binding().mqtt_service)
+        dispatcher = LocalChatDispatcher((binding,), self.state)
+
+        with self.assertRaisesRegex(ChatApiError, "Discord 2000 字元"):
+            dispatcher(
+                {"route_id": "route-1", "text": "x" * 2000, "target": "discord"}
+            )
+
+
+class BridgeRouterTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.state = RuntimeState()
+        self.state.register_route("route-1", "主要路由", "localhost:1883")
+        self.binding = make_binding()
+        self.router = BridgeRouter((self.binding,), self.state)
+
+    def test_meshtastic_message_is_scheduled_to_telegram_and_counted(self):
+        loop = Mock()
+        loop.is_closed.return_value = False
+        self.router.bind_telegram(loop, Mock())
+        completed = Mock()
+
+        def accept_coroutine(coroutine, selected_loop):
+            coroutine.close()
+            self.assertIs(selected_loop, loop)
+            return completed
+
+        with patch(
+            "bridge_router.asyncio.run_coroutine_threadsafe",
+            side_effect=accept_coroutine,
+        ):
+            self.router.forward_meshtastic("route-1", "mesh text")
+
+        callback = completed.add_done_callback.call_args.args[0]
+        completed.result.return_value = None
+        callback(completed)
+        snapshot = self.state.snapshot()
+        self.assertEqual(snapshot["statistics"]["mesh_to_telegram_success"], 1)
+        self.assertIsNotNone(snapshot["last_forwarded_at"])
+
+    def test_unknown_meshtastic_route_is_dropped(self):
+        self.router.forward_meshtastic("missing", "mesh text")
+
+        self.assertEqual(
+            self.state.snapshot()["statistics"]["other_dropped"],
+            1,
+        )
+
+    async def test_telegram_message_uses_router_and_records_monitor_event(self):
+        result = await self.router.forward_telegram(
+            self.binding,
+            user_id=123,
+            username="alice",
+            text="hello",
+        )
+
+        self.assertTrue(result)
+        self.binding.mqtt_service.send_message.assert_called_once_with("[TG:123]: hello")
+        recorded = self.state.messages_after()["messages"][0]
+        self.assertEqual(recorded["source"], "telegram")
+        self.assertEqual(recorded["sender"], "@alice")
+        self.assertEqual(recorded["destinations"], ["meshtastic"])
+
+    def test_meshtastic_still_reaches_discord_when_telegram_is_unavailable(self):
+        route = replace(self.binding.route, discord_channel_id="123456789012345678")
+        binding = RouteBinding(route, self.binding.mqtt_service)
+        router = BridgeRouter((binding,), self.state)
+        completed = Future()
+        completed.set_result(None)
+        discord_sender = Mock(return_value=completed)
+        router.bind_discord(discord_sender)
+
+        router.forward_meshtastic("route-1", "mesh text")
+
+        discord_sender.assert_called_once_with("123456789012345678", "mesh text")
+        self.assertEqual(
+            self.state.snapshot()["statistics"]["mesh_to_discord_success"],
+            1,
+        )
+
+    async def test_telegram_fans_out_to_mesh_and_discord(self):
+        route = replace(self.binding.route, discord_channel_id="123456789012345678")
+        binding = RouteBinding(route, self.binding.mqtt_service)
+        router = BridgeRouter((binding,), self.state)
+        completed = Future()
+        completed.set_result(None)
+        discord_sender = Mock(return_value=completed)
+        router.bind_discord(discord_sender)
+
+        await router.forward_telegram(
+            binding,
+            user_id=123,
+            username="alice",
+            text="hello",
+        )
+
+        discord_sender.assert_called_once_with(
+            "123456789012345678", "[TG:123]: hello"
+        )
+        recorded = self.state.messages_after()["messages"][0]
+        self.assertEqual(recorded["destinations"], ["meshtastic", "discord"])
+        self.assertEqual(
+            self.state.snapshot()["statistics"]["telegram_to_mesh_success"],
+            1,
+        )
+
+    async def test_discord_fans_out_to_mesh_and_telegram(self):
+        loop = Mock()
+        loop.is_closed.return_value = False
+        self.router.bind_telegram(loop, Mock())
+        completed = Future()
+        completed.set_result(None)
+
+        def accept_coroutine(coroutine, selected_loop):
+            coroutine.close()
+            self.assertIs(selected_loop, loop)
+            return completed
+
+        with patch(
+            "bridge_router.asyncio.run_coroutine_threadsafe",
+            side_effect=accept_coroutine,
+        ):
+            await self.router.forward_discord(
+                "route-1", 456, "bob", "hello from discord"
+            )
+
+        self.binding.mqtt_service.send_message.assert_called_once_with(
+            "[DC:@bob]: hello from discord"
+        )
+        recorded = self.state.messages_after()["messages"][0]
+        self.assertEqual(recorded["source"], "discord")
+        self.assertEqual(recorded["sender"], "@bob")
+        self.assertEqual(recorded["destinations"], ["meshtastic", "telegram"])
+
 
 class TelegramMonitoringTests(unittest.IsolatedAsyncioTestCase):
     async def test_authorized_message_is_monitored_even_when_mesh_drops_it(self):
@@ -221,6 +360,30 @@ class TelegramMonitoringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded["sender"], "@alice")
         self.assertEqual(recorded["text"], "too long")
         self.assertEqual(recorded["destinations"], [])
+
+    async def test_handler_delegates_authorized_message_to_router(self):
+        state = RuntimeState()
+        binding = make_binding()
+        router = Mock()
+        router.forward_telegram = AsyncMock(return_value=True)
+        message = SimpleNamespace(text="hello", reply_text=AsyncMock())
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(id=binding.route.target_chat_id),
+            effective_message=message,
+            effective_user=SimpleNamespace(id=123, username="alice"),
+        )
+        context = SimpleNamespace(
+            bot_data={"route_bindings": (binding,), "router": router}
+        )
+
+        await handle_message(update, context, runtime_state=state)
+
+        router.forward_telegram.assert_awaited_once_with(
+            binding,
+            user_id=123,
+            username="alice",
+            text="hello",
+        )
 
 
 class MeshtasticMonitoringTests(unittest.TestCase):

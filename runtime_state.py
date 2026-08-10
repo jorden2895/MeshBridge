@@ -17,6 +17,10 @@ from urllib.parse import parse_qs, urlparse
 STAT_KEYS = (
     "telegram_to_mesh_success",
     "mesh_to_telegram_success",
+    "discord_to_mesh_success",
+    "mesh_to_discord_success",
+    "telegram_to_discord_success",
+    "discord_to_telegram_success",
     "unauthorized_dropped",
     "oversized_dropped",
     "decrypt_failed",
@@ -56,6 +60,12 @@ class RuntimeState:
         self._heartbeat = self._started_at
         self._telegram = {
             "status": "starting",
+            "bot_name": None,
+            "last_changed": self._started_at,
+            "last_error": None,
+        }
+        self._discord = {
+            "status": "disabled",
             "bot_name": None,
             "last_changed": self._started_at,
             "last_error": None,
@@ -110,6 +120,22 @@ class RuntimeState:
                 last_changed=time.time(),
                 last_error=self._redact(error),
             )
+
+    def set_discord(
+        self,
+        status: str,
+        *,
+        bot_name: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._discord.update(
+                status=status,
+                last_changed=time.time(),
+                last_error=self._redact(error),
+            )
+            if bot_name is not None:
+                self._discord["bot_name"] = bot_name
 
     def increment(self, key: str, amount: int = 1) -> None:
         if not self._statistics_enabled:
@@ -170,6 +196,7 @@ class RuntimeState:
                 "started_at": self._started_at,
                 "last_forwarded_at": self._last_forwarded_at,
                 "telegram": dict(self._telegram),
+                "discord": dict(self._discord),
                 "routes": {
                     route_id: dict(route) for route_id, route in self._routes.items()
                 },

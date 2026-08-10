@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app_paths import application_dir
 from config import ConfigError, load_config
+from discord_bridge import DiscordBridge, DiscordServiceError
 from mqtt_service import MqttService, MqttServiceError
 from runtime_state import RuntimeState, StatusApiServer
 from telegram_bridge import RouteBinding, create_application, start_bot
@@ -104,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     status_server = None
     tray_service = None
     update_monitor = None
+    discord_service = None
     try:
         config = load_config(application_dir() / "config.json")
         set_console_visible(
@@ -111,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         secrets = (
             config.telegram.bot_token,
+            config.discord.bot_token,
             config.mqtt.password,
             *(route.channel_key.hex() for route in config.routes),
         )
@@ -141,6 +144,30 @@ def main(argv: list[str] | None = None) -> int:
             ui_display_name=config.bridge_ui.display_name,
         )
         request_stop = telegram_app.bot_data["request_stop"]
+        router = telegram_app.bot_data["router"]
+        if config.discord.enabled:
+            runtime_state.set_discord("starting")
+            channel_routes = {
+                route.discord_channel_id: binding.mqtt_service.route_id
+                for route, binding in zip(config.active_routes, bindings)
+                if route.discord_channel_id is not None
+            }
+
+            def update_discord_status(
+                status: str,
+                bot_name: str | None,
+                error: str | None,
+            ) -> None:
+                runtime_state.set_discord(status, bot_name=bot_name, error=error)
+
+            discord_service = DiscordBridge(
+                config.discord.bot_token,
+                channel_routes,
+                router.forward_discord,
+                on_status=update_discord_status,
+            )
+            router.bind_discord(discord_service.schedule_text)
+            discord_service.start()
         if config.features.status.enabled:
             status_server = StatusApiServer(
                 runtime_state,
@@ -181,6 +208,10 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("MQTT 啟動失敗：%s", exc)
         show_error_dialog("MeshTelegram Bridge 啟動失敗", f"MQTT 啟動失敗：{exc}")
         return 3
+    except DiscordServiceError as exc:
+        logger.error("Discord 啟動失敗：%s", exc)
+        show_error_dialog("MeshTelegram Bridge 啟動失敗", f"Discord 啟動失敗：{exc}")
+        return 4
     except KeyboardInterrupt:
         logger.info("收到停止訊號，正在關閉程式。")
         return 0
@@ -192,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     finally:
+        if discord_service is not None:
+            discord_service.stop()
         if update_monitor is not None:
             update_monitor.stop()
         if tray_service is not None:

@@ -251,6 +251,27 @@ class MqttServiceTests(unittest.TestCase):
 
 
 class TelegramApplicationTests(unittest.TestCase):
+    def test_legacy_application_keeps_router_without_runtime_status(self):
+        mqtt_service = Mock()
+        mqtt_service.route_id = "route-1"
+        fake_application = Mock()
+        fake_application.bot_data = {}
+        builder = Mock()
+        builder.token.return_value = builder
+        builder.post_init.return_value = builder
+        builder.post_shutdown.return_value = builder
+        builder.build.return_value = fake_application
+
+        with patch.object(
+            create_application.__globals__["Application"],
+            "builder",
+            return_value=builder,
+        ):
+            create_application("token", -100123, mqtt_service)
+
+        self.assertIsNotNone(fake_application.bot_data["router"])
+        self.assertIsNone(fake_application.bot_data["chat_dispatcher"])
+
     def test_frozen_build_suppresses_only_false_builder_warning(self):
         mqtt_service = Mock()
         fake_application = Mock()

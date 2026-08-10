@@ -21,6 +21,64 @@ def valid_config():
 
 
 class ConfigTests(unittest.TestCase):
+    def test_legacy_config_keeps_discord_disabled(self):
+        config = AppConfig.from_dict(valid_config())
+
+        self.assertFalse(config.discord.enabled)
+        self.assertEqual(config.discord.bot_token, "")
+        self.assertIsNone(config.routes[0].discord_channel_id)
+
+    def test_discord_config_and_channel_ids_remain_strings(self):
+        raw = valid_config()
+        raw["discord"] = {"enabled": True, "bot_token": "discord-token"}
+        raw["routes"] = [
+            {
+                "name": "主要路由",
+                "enabled": True,
+                "channel_name": "Test",
+                "channel_key": "AQ==",
+                "target_chat_id": -100123,
+                "topic_id": None,
+                "discord_channel_id": 123456789012345678,
+            }
+        ]
+
+        config = AppConfig.from_dict(raw)
+
+        self.assertTrue(config.discord.enabled)
+        self.assertEqual(config.routes[0].discord_channel_id, "123456789012345678")
+
+    def test_enabled_discord_requires_token_and_active_channel(self):
+        raw = valid_config()
+        raw["discord"] = {"enabled": True, "bot_token": ""}
+        with self.assertRaisesRegex(ConfigError, "discord.bot_token"):
+            AppConfig.from_dict(raw)
+
+        raw["discord"]["bot_token"] = "discord-token"
+        with self.assertRaisesRegex(ConfigError, "Discord 頻道 ID"):
+            AppConfig.from_dict(raw)
+
+    def test_rejects_invalid_or_duplicate_discord_channel_ids(self):
+        raw = valid_config()
+        raw["routes"] = []
+        for index in range(2):
+            raw["routes"].append(
+                {
+                    "name": f"路由 {index}",
+                    "enabled": True,
+                    "channel_name": f"Channel{index}",
+                    "channel_key": "AQ==",
+                    "target_chat_id": -100123 - index,
+                    "discord_channel_id": "123456789012345678",
+                }
+            )
+        with self.assertRaisesRegex(ConfigError, "Discord 頻道必須不同"):
+            AppConfig.from_dict(raw)
+
+        raw["routes"][1]["discord_channel_id"] = "not-a-number"
+        with self.assertRaisesRegex(ConfigError, "正整數字串"):
+            AppConfig.from_dict(raw)
+
     def test_legacy_config_uses_default_bridge_ui_display_name(self):
         config = AppConfig.from_dict(valid_config())
 
