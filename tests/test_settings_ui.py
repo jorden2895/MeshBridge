@@ -43,6 +43,7 @@ class SettingsUiDataTests(unittest.TestCase):
 
     def test_flatten_and_build_round_trip(self):
         raw = valid_config()
+        raw["bridge_ui"] = {"display_name": "基地台"}
         values = flatten_config(raw)
 
         result = build_config(values)
@@ -51,6 +52,12 @@ class SettingsUiDataTests(unittest.TestCase):
         self.assertEqual(result["mqtt"]["port"], 1883)
         self.assertEqual(result["mqtt"]["root_topic"], "msh/TW/2/e/")
         self.assertEqual(result["node"]["id"], 2882392497)
+        self.assertEqual(result["bridge_ui"]["display_name"], "基地台")
+
+    def test_legacy_config_ui_defaults_bridge_ui_display_name(self):
+        values = flatten_config(valid_config())
+
+        self.assertEqual(values["bridge_ui.display_name"], "Bridge UI")
 
     def test_atomic_save_writes_valid_utf8_json(self):
         data = build_config(flatten_config(valid_config()))

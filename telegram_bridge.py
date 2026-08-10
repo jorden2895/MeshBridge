@@ -16,13 +16,12 @@ from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.warnings import PTBUserWarning
 
-from config import RouteConfig
+from config import DEFAULT_BRIDGE_UI_DISPLAY_NAME, RouteConfig
 from mqtt_service import MAX_MESHTASTIC_PAYLOAD_BYTES, MqttService, MqttServiceError
 from runtime_state import ChatApiError, RuntimeState
 
 
 logger = logging.getLogger(__name__)
-UI_MESSAGE_PREFIX = "[Bridge UI]: "
 
 
 @dataclass(frozen=True)
@@ -65,9 +64,15 @@ class ThreadSafeApplicationStop:
 class LocalChatDispatcher:
     """Send UI chat commands from the local API thread to active routes."""
 
-    def __init__(self, bindings: tuple[RouteBinding, ...], runtime_state: RuntimeState) -> None:
+    def __init__(
+        self,
+        bindings: tuple[RouteBinding, ...],
+        runtime_state: RuntimeState,
+        display_name: str = DEFAULT_BRIDGE_UI_DISPLAY_NAME,
+    ) -> None:
         self.bindings = {binding.mqtt_service.route_id: binding for binding in bindings}
         self.runtime_state = runtime_state
+        self.display_name = display_name
         self._lock = threading.Lock()
         self._loop = None
         self._bot = None
@@ -95,7 +100,7 @@ class LocalChatDispatcher:
         if len(text) > 4000:
             raise ChatApiError("訊息過長")
 
-        formatted = UI_MESSAGE_PREFIX + text
+        formatted = f"[{self.display_name}]: {text}"
         if target in {"meshtastic", "both"} and len(formatted.encode("utf-8")) > MAX_MESHTASTIC_PAYLOAD_BYTES:
             raise ChatApiError(
                 f"包含 UI 標記後超過 Meshtastic {MAX_MESHTASTIC_PAYLOAD_BYTES} bytes 上限"
@@ -142,7 +147,7 @@ class LocalChatDispatcher:
         self.runtime_state.record_message(
             route_id=route_id,
             source="bridge_ui",
-            sender="Bridge UI",
+            sender=self.display_name,
             text=text,
             destinations=tuple(sent),
         )
@@ -284,6 +289,7 @@ def create_application(
     target_chat_id: int | Iterable[RouteBinding],
     mqtt_service: MqttService | None = None,
     runtime_state: RuntimeState | None = None,
+    ui_display_name: str = DEFAULT_BRIDGE_UI_DISPLAY_NAME,
 ) -> Application:
     """Create a Telegram application coupled to the MQTT service lifecycle."""
     telegram_loop = None
@@ -410,7 +416,9 @@ def create_application(
     stop_request = ThreadSafeApplicationStop(application.stop_running)
     application.bot_data["request_stop"] = stop_request
     chat_dispatcher = (
-        LocalChatDispatcher(bindings, runtime_state) if runtime_state is not None else None
+        LocalChatDispatcher(bindings, runtime_state, ui_display_name)
+        if runtime_state is not None
+        else None
     )
     application.bot_data["chat_dispatcher"] = chat_dispatcher
     application.add_handler(CommandHandler("start", start))

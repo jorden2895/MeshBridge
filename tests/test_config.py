@@ -21,6 +21,27 @@ def valid_config():
 
 
 class ConfigTests(unittest.TestCase):
+    def test_legacy_config_uses_default_bridge_ui_display_name(self):
+        config = AppConfig.from_dict(valid_config())
+
+        self.assertEqual(config.bridge_ui.display_name, "Bridge UI")
+
+    def test_custom_bridge_ui_display_name_is_normalized(self):
+        raw = valid_config()
+        raw["bridge_ui"] = {"display_name": "  基地台  "}
+
+        config = AppConfig.from_dict(raw)
+
+        self.assertEqual(config.bridge_ui.display_name, "基地台")
+
+    def test_rejects_invalid_bridge_ui_display_name(self):
+        for display_name in ("", "x" * 33, "line\nbreak", "control\x7f"):
+            with self.subTest(display_name=display_name):
+                raw = valid_config()
+                raw["bridge_ui"] = {"display_name": display_name}
+                with self.assertRaisesRegex(ConfigError, "bridge_ui.display_name"):
+                    AppConfig.from_dict(raw)
+
     def test_normalizes_types_topic_and_simple_key(self):
         config = AppConfig.from_dict(valid_config())
         self.assertEqual(config.telegram.target_chat_id, -100123)

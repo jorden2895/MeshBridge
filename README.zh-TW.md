@@ -47,6 +47,8 @@ MQTT 密碼與 Meshtastic 頻道金鑰，請勿公開、分享或提交至 Git�
 - `telegram`：Bot Token 與唯一獲准使用 Bridge 的聊天室 ID。
 - `mqtt`：Broker 位址、連接埠、帳號、根主題、頻道名稱與頻道金鑰。
 - `node`：Meshtastic 虛擬節點 ID、完整名稱與簡短名稱。
+- `bridge_ui.display_name`：介面發送訊息的前綴與監看來源名稱；舊設定未提供時
+  預設為 `Bridge UI`。
 - `routes`：啟用多頻道路由時使用，最多五組；每組包含頻道、金鑰、聊天室與
   可選的 Telegram 主題 ID。
 - `features`：狀態統計、本機狀態 API、多路由、系統匣及更新選項。
@@ -66,9 +68,10 @@ wildcard `+`、`#`。MQTT 帳號與密碼可同時留空以使用匿名 Broker�
 
 設定工具的「聊天」分頁會監看所有啟用路由，僅在 Bridge 記憶體保留最近 200
 筆訊息；不會寫入磁碟，Bridge 重啟後即清空。發送時可選擇 Meshtastic、
-Telegram 或兩邊同時，兩個目的地會分別回報結果。從介面發出的訊息會加上
-`[Bridge UI]: ` 前綴；傳送至 Meshtastic 時，包含此前綴的完整 UTF-8 內容不得
-超過 233 bytes。Bridge 未執行或停用本機狀態 API 時，聊天功能不可使用。
+Telegram 或兩邊同時，兩個目的地會分別回報結果。從介面發出的訊息會使用
+設定的顯示名稱作為前綴（例如 `[基地台]: `），監看來源也會顯示相同名稱。
+傳送至 Meshtastic 時，包含此前綴的完整 UTF-8 內容不得超過 233 bytes。
+Bridge 未執行或停用本機狀態 API 時，聊天功能不可使用。
 
 系統匣模式整合於 `MeshTelegramBridge.exe`。雙擊圖示或選擇「設定」可開啟
 設定工具，選單也可結束 Bridge。Release 執行檔預設不建立主控台；未啟用系統匣

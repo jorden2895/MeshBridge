@@ -54,6 +54,8 @@ configuration files remain compatible. New settings include:
 - `mqtt`: broker address, port, credentials, root topic, channel name, and
   channel key.
 - `node`: the virtual Meshtastic node ID, long name, and short name.
+- `bridge_ui.display_name`: the name shown in locally sent message prefixes and
+  the chat monitor; defaults to `Bridge UI` for existing configurations.
 - `routes`: up to five channel/chat/topic mappings when multi-route mode is enabled.
 - `features`: statistics, local status API, multi-route, tray, and update options.
 
@@ -76,9 +78,10 @@ The settings tool's **聊天** tab monitors all active routes and keeps only the
 latest 200 messages in Bridge memory. Message history is never persisted and is
 cleared when the Bridge restarts. Select a route and send to Meshtastic,
 Telegram, or both independently. UI-originated messages use the
-`[Bridge UI]: ` prefix. Meshtastic-bound text, including that prefix, must fit
-the 233-byte UTF-8 payload limit. The chat tab is unavailable when the Bridge
-is stopped or the local status API is disabled.
+configured display-name prefix (for example, `[Base Station]: `), and the same
+name appears as their source in the monitor. Meshtastic-bound text, including
+that prefix, must fit the 233-byte UTF-8 payload limit. The chat tab is
+unavailable when the Bridge is stopped or the local status API is disabled.
 
 Tray mode is part of `MeshTelegramBridge.exe`; double-clicking opens the
 settings tool. Release builds hide the console by default in tray mode, with

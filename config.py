@@ -11,6 +11,7 @@ from meshtastic_codec import normalize_channel_key
 MAX_ROUTES = 5
 DEFAULT_STATUS_API_ENABLED = True
 DEFAULT_UPDATE_INTERVAL_HOURS = 24
+DEFAULT_BRIDGE_UI_DISPLAY_NAME = "Bridge UI"
 
 
 class ConfigError(ValueError):
@@ -98,6 +99,11 @@ class NodeConfig:
 
 
 @dataclass(frozen=True)
+class BridgeUiConfig:
+    display_name: str = DEFAULT_BRIDGE_UI_DISPLAY_NAME
+
+
+@dataclass(frozen=True)
 class RouteConfig:
     name: str
     enabled: bool
@@ -141,6 +147,7 @@ class AppConfig:
     telegram: TelegramConfig
     mqtt: MqttConfig
     node: NodeConfig
+    bridge_ui: BridgeUiConfig
     routes: tuple[RouteConfig, ...]
     features: FeatureConfig
 
@@ -164,6 +171,7 @@ class AppConfig:
         telegram_raw = _object(raw, "telegram")
         mqtt_raw = _object(raw, "mqtt")
         node_raw = _object(raw, "node")
+        bridge_ui_raw = _object(raw, "bridge_ui", required=False)
 
         bot_token = _required_text(telegram_raw, "bot_token", "telegram")
         legacy_target = telegram_raw.get("target_chat_id")
@@ -187,6 +195,14 @@ class AppConfig:
             raise ConfigError("「node.long_name」最多只能有 40 個字元")
         if len(short_name) > 4:
             raise ConfigError("「node.short_name」最多只能有 4 個字元")
+
+        display_name = str(
+            bridge_ui_raw.get("display_name", DEFAULT_BRIDGE_UI_DISPLAY_NAME)
+        ).strip()
+        if not 1 <= len(display_name) <= 32:
+            raise ConfigError("「bridge_ui.display_name」必須包含 1 到 32 個字元")
+        if any(ord(character) < 32 or ord(character) == 127 for character in display_name):
+            raise ConfigError("「bridge_ui.display_name」不可包含換行或控制字元")
 
         routes_raw = raw.get("routes")
         if routes_raw is None:
@@ -342,6 +358,7 @@ class AppConfig:
                 channel_key=first_route.channel_key,
             ),
             node=NodeConfig(node_id=node_id, long_name=long_name, short_name=short_name),
+            bridge_ui=BridgeUiConfig(display_name=display_name),
             routes=routes,
             features=features,
         )

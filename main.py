@@ -138,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
             config.telegram.bot_token,
             bindings,
             runtime_state=runtime_state,
+            ui_display_name=config.bridge_ui.display_name,
         )
         request_stop = telegram_app.bot_data["request_stop"]
         if config.features.status.enabled:

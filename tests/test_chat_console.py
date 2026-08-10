@@ -138,6 +138,18 @@ class LocalChatDispatcherTests(unittest.TestCase):
         self.assertEqual(recorded["source"], "bridge_ui")
         self.assertEqual(recorded["text"], "hello")
 
+    def test_custom_display_name_updates_prefix_and_monitor_sender(self):
+        binding = make_binding()
+        dispatcher = LocalChatDispatcher((binding,), self.state, "基地台")
+
+        dispatcher(
+            {"route_id": "route-1", "text": "hello", "target": "meshtastic"}
+        )
+
+        binding.mqtt_service.send_message.assert_called_once_with("[基地台]: hello")
+        recorded = self.state.messages_after()["messages"][0]
+        self.assertEqual(recorded["sender"], "基地台")
+
     def test_both_targets_report_telegram_not_ready_as_partial_failure(self):
         binding = make_binding()
         dispatcher = LocalChatDispatcher((binding,), self.state)
