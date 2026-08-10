@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo Setting up the MeshTelegram Bridge environment...
+echo Setting up the MeshBridge environment...
 echo.
 
 where py >nul 2>&1
@@ -26,7 +26,7 @@ if errorlevel 1 goto setup_failed
 
 echo.
 echo Setup completed successfully.
-echo You can now run open_settings.bat or run_meshtelegram_bridge.bat.
+echo You can now run open_settings.bat or run_meshbridge.bat.
 goto finish_success
 
 :python_missing

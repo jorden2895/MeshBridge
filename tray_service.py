@@ -13,13 +13,14 @@ from app_paths import application_dir
 
 
 logger = logging.getLogger(__name__)
-AUTOSTART_NAME = "MeshTelegram Bridge"
+AUTOSTART_NAME = "MeshBridge"
+LEGACY_AUTOSTART_NAME = "MeshTelegram Bridge"
 _WINDOW_PROCEDURES: list[object] = []
 
 
 def _settings_command() -> list[str]:
     directory = application_dir()
-    executable = directory / "MeshTelegramBridgeSettings.exe"
+    executable = directory / "MeshBridgeSettings.exe"
     if executable.exists():
         command = [str(executable)]
     else:
@@ -109,6 +110,10 @@ def sync_autostart(enabled: bool) -> None:
         0,
         winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
     ) as key:
+        try:
+            winreg.DeleteValue(key, LEGACY_AUTOSTART_NAME)
+        except FileNotFoundError:
+            pass
         if enabled:
             winreg.SetValueEx(key, AUTOSTART_NAME, 0, winreg.REG_SZ, command)
         else:
@@ -139,9 +144,9 @@ class TrayService:
             self.stop_callback()
 
         self._icon = pystray.Icon(
-            "MeshTelegramBridge",
+            "MeshBridge",
             image,
-            "MeshTelegram Bridge",
+            "MeshBridge",
             menu=pystray.Menu(
                 pystray.MenuItem("設定", show_settings, default=True),
                 pystray.MenuItem("結束", exit_bridge),

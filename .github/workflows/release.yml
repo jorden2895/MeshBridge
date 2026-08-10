@@ -66,8 +66,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $bridgeHash = (Get-FileHash -LiteralPath '.\dist\MeshTelegramBridge.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
-          $settingsHash = (Get-FileHash -LiteralPath '.\dist\MeshTelegramBridgeSettings.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $bridgeHash = (Get-FileHash -LiteralPath '.\dist\MeshBridge.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $settingsHash = (Get-FileHash -LiteralPath '.\dist\MeshBridgeSettings.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           $generated = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" `
             -f "tag_name=$tag" `
             -f "target_commitish=$env:GITHUB_SHA" | ConvertFrom-Json
@@ -76,15 +76,15 @@ jobs:
 
           ## 下載
 
-          - ``MeshTelegramBridge.exe``：執行橋接服務。
-          - ``MeshTelegramBridgeSettings.exe``：中文圖形化設定工具。
+          - ``MeshBridge.exe``：執行橋接服務。
+          - ``MeshBridgeSettings.exe``：中文圖形化設定工具。
 
           請將兩個檔案放在同一資料夾中使用。既有 ``config.json`` 可以繼續沿用，請勿公開或提交該設定檔。
 
           ## SHA-256
 
-          - ``MeshTelegramBridge.exe``：``$bridgeHash``
-          - ``MeshTelegramBridgeSettings.exe``：``$settingsHash``
+          - ``MeshBridge.exe``：``$bridgeHash``
+          - ``MeshBridgeSettings.exe``：``$settingsHash``
           "@
           $notes | Set-Content -LiteralPath '.\release-notes.md' -Encoding utf8
 
@@ -101,19 +101,19 @@ jobs:
               throw "Release $tag is already published and will not be overwritten."
             }
             gh release upload $tag `
-              '.\dist\MeshTelegramBridge.exe#MeshTelegramBridge.exe' `
-              '.\dist\MeshTelegramBridgeSettings.exe#MeshTelegramBridgeSettings.exe' `
+              '.\dist\MeshBridge.exe#MeshBridge.exe' `
+              '.\dist\MeshBridgeSettings.exe#MeshBridgeSettings.exe' `
               --clobber
             gh release edit $tag `
               --draft `
-              --title "MeshTelegram Bridge $tag" `
+              --title "MeshBridge $tag" `
               --notes-file '.\release-notes.md'
           }
           else {
             gh release create $tag `
-              '.\dist\MeshTelegramBridge.exe#MeshTelegramBridge.exe' `
-              '.\dist\MeshTelegramBridgeSettings.exe#MeshTelegramBridgeSettings.exe' `
+              '.\dist\MeshBridge.exe#MeshBridge.exe' `
+              '.\dist\MeshBridgeSettings.exe#MeshBridgeSettings.exe' `
               --draft `
-              --title "MeshTelegram Bridge $tag" `
+              --title "MeshBridge $tag" `
               --notes-file '.\release-notes.md'
           }

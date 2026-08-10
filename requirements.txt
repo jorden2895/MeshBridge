@@ -1,4 +1,4 @@
-# Runtime dependencies for MeshTelegram Bridge
+# Runtime dependencies for MeshBridge
 cryptography==50.0.0
 discord.py==2.7.1
 meshtastic==2.7.11

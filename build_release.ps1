@@ -33,12 +33,12 @@ function Write-VersionInfo {
 VSVersionInfo(
   ffi=FixedFileInfo(filevers=($FileVersion), prodvers=($FileVersion), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[StringFileInfo([StringTable('040904B0', [
-    StringStruct('CompanyName', 'MeshTelegram Bridge'),
+    StringStruct('CompanyName', 'MeshBridge'),
     StringStruct('FileDescription', '$Description'),
     StringStruct('FileVersion', '$AppVersion'),
     StringStruct('InternalName', '$InternalName'),
     StringStruct('OriginalFilename', '$OriginalFilename'),
-    StringStruct('ProductName', 'MeshTelegram Bridge'),
+    StringStruct('ProductName', 'MeshBridge'),
     StringStruct('ProductVersion', '$AppVersion')
   ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]
 )
@@ -46,21 +46,21 @@ VSVersionInfo(
 }
 
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
-Write-VersionInfo $BridgeVersionInfo "MeshTelegram Bridge" "MeshTelegramBridge" "MeshTelegramBridge.exe"
-Write-VersionInfo $SettingsVersionInfo "MeshTelegram Bridge Settings" "MeshTelegramBridgeSettings" "MeshTelegramBridgeSettings.exe"
+Write-VersionInfo $BridgeVersionInfo "MeshBridge" "MeshBridge" "MeshBridge.exe"
+Write-VersionInfo $SettingsVersionInfo "MeshBridge Settings" "MeshBridgeSettings" "MeshBridgeSettings.exe"
 
 & $Python -m pip install -r (Join-Path $ProjectRoot "requirements-build.txt")
 if ($LASTEXITCODE -ne 0) { throw "Failed to install PyInstaller." }
 
 & $Python -m PyInstaller --noconfirm --clean --onefile --windowed `
-    --name MeshTelegramBridge `
+    --name MeshBridge `
     --version-file $BridgeVersionInfo `
     --distpath $Dist --workpath $Work `
     (Join-Path $ProjectRoot "main.py")
 if ($LASTEXITCODE -ne 0) { throw "Bridge executable build failed." }
 
 & $Python -m PyInstaller --noconfirm --clean --onefile --windowed `
-    --name MeshTelegramBridgeSettings `
+    --name MeshBridgeSettings `
     --version-file $SettingsVersionInfo `
     --distpath $Dist --workpath $Work `
     (Join-Path $ProjectRoot "settings_ui.py")

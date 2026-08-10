@@ -6,12 +6,12 @@ if not exist ".venv\Scripts\python.exe" goto environment_error
 ".venv\Scripts\python.exe" -c "import sys" >nul 2>&1
 if errorlevel 1 goto environment_error
 
-echo Starting MeshTelegram Bridge...
+echo Starting MeshBridge...
 echo.
 ".venv\Scripts\python.exe" main.py
 set "BRIDGE_EXIT_CODE=%ERRORLEVEL%"
 echo.
-echo MeshTelegram Bridge has stopped.
+echo MeshBridge has stopped.
 pause
 exit /b %BRIDGE_EXIT_CODE%
 

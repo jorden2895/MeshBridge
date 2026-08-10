@@ -1,4 +1,4 @@
-# MeshTelegram Bridge MQTT service
+# MeshBridge MQTT service
 
 import paho.mqtt.client as mqtt
 import logging

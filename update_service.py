@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import Any
 
 
-REPOSITORY = "jorden2895/meshtelegram-bridge"
+REPOSITORY = "jorden2895/MeshBridge"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
-USER_AGENT = "MeshTelegram-Bridge-Updater"
+USER_AGENT = "MeshBridge-Updater"
 
 
 class UpdateError(RuntimeError):
@@ -108,7 +108,7 @@ def download_asset(asset: ReleaseAsset, destination: Path, timeout: float = 60) 
 
 
 def download_portable_release(release: ReleaseInfo, directory: Path) -> list[Path]:
-    wanted = {"MeshTelegramBridge.exe", "MeshTelegramBridgeSettings.exe"}
+    wanted = {"MeshBridge.exe", "MeshBridgeSettings.exe"}
     selected = {asset.name: asset for asset in release.assets if asset.name in wanted}
     missing = sorted(wanted - selected.keys())
     if missing:
@@ -130,7 +130,7 @@ def schedule_portable_install(files: list[Path], install_dir: Path) -> None:
     def ps_quote(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
-    script = Path(tempfile.gettempdir()) / f"meshtelegram-update-{os.getpid()}.ps1"
+    script = Path(tempfile.gettempdir()) / f"meshbridge-update-{os.getpid()}.ps1"
     current_name = Path(sys.executable).name.casefold()
     ordered_files = sorted(
         files,
