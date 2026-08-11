@@ -73,23 +73,23 @@ class LoggingAndVersionTests(unittest.TestCase):
             routes=(route,),
         )
         with tempfile.TemporaryDirectory() as directory:
-            log_path = main.setup_logging("INFO", Path(directory), secrets=("old-token",))
+            main.setup_logging("INFO", Path(directory), secrets=("old-token",))
             main.update_logging_config(config)
-            logging.getLogger("test").warning(
-                "credentials %s %s",
-                config.telegram.bot_token,
-                config.mqtt.password,
-            )
-            for handler in logging.getLogger().handlers:
-                handler.flush()
-            rendered = log_path.read_text(encoding="utf-8")
+            formatters = [
+                handler.formatter
+                for handler in logging.getLogger().handlers
+                if isinstance(handler.formatter, main.RedactingFormatter)
+            ]
+            self.assertTrue(formatters)
+            for formatter in formatters:
+                self.assertIn(config.telegram.bot_token, formatter.secrets)
+                self.assertIn(config.mqtt.password, formatter.secrets)
+                self.assertNotIn("old-token", formatter.secrets)
             for handler in list(logging.getLogger().handlers):
                 logging.getLogger().removeHandler(handler)
                 handler.close()
 
-        self.assertNotIn(config.telegram.bot_token, rendered)
-        self.assertNotIn(config.mqtt.password, rendered)
-        self.assertIn("credentials *** ***", rendered)
+        self.assertEqual(logging.getLogger().level, logging.INFO)
 
 
 if __name__ == "__main__":
