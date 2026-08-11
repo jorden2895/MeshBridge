@@ -108,7 +108,7 @@ def download_asset(asset: ReleaseAsset, destination: Path, timeout: float = 60) 
 
 
 def download_portable_release(release: ReleaseInfo, directory: Path) -> list[Path]:
-    wanted = {"MeshBridge.exe", "MeshBridgeSettings.exe"}
+    wanted = {"MeshBridge.exe"}
     selected = {asset.name: asset for asset in release.assets if asset.name in wanted}
     missing = sorted(wanted - selected.keys())
     if missing:

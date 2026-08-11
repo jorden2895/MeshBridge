@@ -163,7 +163,7 @@ class MqttServiceTests(unittest.TestCase):
 
     def test_meshtastic_info_log_excludes_message_body(self):
         service = MqttService(AppConfig.from_dict(valid_config()))
-        service.telegram_callback = Mock()
+        service.message_callback = Mock()
         message_text = "private channel message"
         payload = message_text.encode("utf-8")
         sender_node_id = 0x12345678
@@ -189,11 +189,11 @@ class MqttServiceTests(unittest.TestCase):
         self.assertIn(f"payload_bytes={len(payload)}", output)
         self.assertIn("from !12345678", output)
         self.assertNotIn(message_text, output)
-        service.telegram_callback.assert_called_once_with("[Node !12345678]: private channel message")
+        service.message_callback.assert_called_once_with("[Node !12345678]: private channel message")
 
     def test_rejects_plaintext_decoded_mqtt_packet(self):
         service = MqttService(AppConfig.from_dict(valid_config()))
-        service.telegram_callback = Mock()
+        service.message_callback = Mock()
         envelope = mqtt_service_module.mqtt_pb2.ServiceEnvelope()
         packet = envelope.packet
         packet.id = 7
@@ -203,11 +203,11 @@ class MqttServiceTests(unittest.TestCase):
 
         service.on_message(None, None, SimpleNamespace(payload=envelope.SerializeToString()))
 
-        service.telegram_callback.assert_not_called()
+        service.message_callback.assert_not_called()
 
     def test_rejects_packet_that_cannot_be_decrypted(self):
         service = MqttService(AppConfig.from_dict(valid_config()))
-        service.telegram_callback = Mock()
+        service.message_callback = Mock()
         envelope = mqtt_service_module.mqtt_pb2.ServiceEnvelope()
         packet = envelope.packet
         packet.id = 8
@@ -217,11 +217,11 @@ class MqttServiceTests(unittest.TestCase):
 
         service.on_message(None, None, SimpleNamespace(payload=envelope.SerializeToString()))
 
-        service.telegram_callback.assert_not_called()
+        service.message_callback.assert_not_called()
 
     def test_rejects_encrypted_packet_with_wrong_channel_hash(self):
         service = MqttService(AppConfig.from_dict(valid_config()))
-        service.telegram_callback = Mock()
+        service.message_callback = Mock()
         message = self.encrypted_message(
             service, packet_id=9, sender_id=0x12345678, text="wrong channel"
         )
@@ -231,11 +231,11 @@ class MqttServiceTests(unittest.TestCase):
 
         service.on_message(None, None, SimpleNamespace(payload=envelope.SerializeToString()))
 
-        service.telegram_callback.assert_not_called()
+        service.message_callback.assert_not_called()
 
     def test_deduplicates_by_sender_and_packet_id_not_message_text(self):
         service = MqttService(AppConfig.from_dict(valid_config()))
-        service.telegram_callback = Mock()
+        service.message_callback = Mock()
         first = self.encrypted_message(
             service, packet_id=100, sender_id=0x12345678, text="same"
         )
@@ -247,7 +247,7 @@ class MqttServiceTests(unittest.TestCase):
         service.on_message(None, None, second)
         service.on_message(None, None, second)
 
-        self.assertEqual(service.telegram_callback.call_count, 2)
+        self.assertEqual(service.message_callback.call_count, 2)
 
 
 class TelegramApplicationTests(unittest.TestCase):

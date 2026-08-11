@@ -26,7 +26,7 @@ if errorlevel 1 goto setup_failed
 
 echo.
 echo Setup completed successfully.
-echo You can now run open_settings.bat or run_meshbridge.bat.
+echo You can now run run_meshbridge.bat.
 goto finish_success
 
 :python_missing

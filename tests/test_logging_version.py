@@ -4,6 +4,7 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import main
@@ -61,6 +62,34 @@ class LoggingAndVersionTests(unittest.TestCase):
         self.assertEqual(stopped.exception.code, 0)
         self.assertIn(__version__, output.getvalue())
         self.assertRegex(__version__, r"^\d+\.\d+\.\d+$")
+
+    def test_logging_secrets_are_refreshed_after_configuration_change(self):
+        route = SimpleNamespace(channel_key=b"new-channel-secret")
+        config = SimpleNamespace(
+            logging_level="INFO",
+            telegram=SimpleNamespace(bot_token="new-telegram-token"),
+            discord=SimpleNamespace(bot_token="new-discord-token"),
+            mqtt=SimpleNamespace(password="new-mqtt-password"),
+            routes=(route,),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            main.setup_logging("INFO", Path(directory), secrets=("old-token",))
+            main.update_logging_config(config)
+            formatters = [
+                handler.formatter
+                for handler in logging.getLogger().handlers
+                if isinstance(handler.formatter, main.RedactingFormatter)
+            ]
+            self.assertTrue(formatters)
+            for formatter in formatters:
+                self.assertIn(config.telegram.bot_token, formatter.secrets)
+                self.assertIn(config.mqtt.password, formatter.secrets)
+                self.assertNotIn("old-token", formatter.secrets)
+            for handler in list(logging.getLogger().handlers):
+                logging.getLogger().removeHandler(handler)
+                handler.close()
+
+        self.assertEqual(logging.getLogger().level, logging.INFO)
 
 
 if __name__ == "__main__":

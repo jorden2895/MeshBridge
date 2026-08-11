@@ -203,10 +203,10 @@ def create_application(
     mqtt_service: MqttService | None = None,
     runtime_state: RuntimeState | None = None,
     ui_display_name: str = DEFAULT_BRIDGE_UI_DISPLAY_NAME,
+    router: BridgeRouter | None = None,
 ) -> Application:
-    """Create a Telegram application coupled to the MQTT service lifecycle."""
+    """Create a Telegram adapter; service lifecycle is owned by BridgeRuntime."""
     telegram_loop = None
-    heartbeat_task = None
 
     if isinstance(target_chat_id, int):
         if mqtt_service is None:
@@ -221,7 +221,7 @@ def create_application(
             raise ValueError("at least one route binding is required")
 
     async def post_init(application: Application) -> None:
-        nonlocal telegram_loop, heartbeat_task
+        nonlocal telegram_loop
         telegram_loop = asyncio.get_running_loop()
         stop_request.bind_loop(telegram_loop)
         if router is not None:
@@ -231,46 +231,10 @@ def create_application(
         if runtime_state is not None:
             runtime_state.set_telegram("connected", bot_name=bot_name)
 
-            async def update_heartbeat() -> None:
-                while True:
-                    runtime_state.heartbeat()
-                    await asyncio.sleep(1)
-
-            heartbeat_task = asyncio.create_task(update_heartbeat())
-
-        started: list[MqttService] = []
-        try:
-            for binding in bindings:
-                if router is not None:
-                    binding.mqtt_service.set_telegram_callback(
-                        partial(router.forward_meshtastic, binding.mqtt_service.route_id)
-                    )
-
-                def fatal_mqtt(error: str) -> None:
-                    logger.error("MQTT 發生致命錯誤：%s", error)
-                    stop_request()
-
-                binding.mqtt_service.set_fatal_callback(fatal_mqtt)
-                await asyncio.to_thread(binding.mqtt_service.start)
-                started.append(binding.mqtt_service)
-        except Exception:
-            for service in reversed(started):
-                await asyncio.to_thread(service.stop)
-            raise
-        logger.info("MeshBridge 已就緒，可以開始轉發訊息。")
-
     async def post_shutdown(application: Application) -> None:
         stop_request.clear_loop()
         if router is not None:
             router.clear_telegram()
-        if heartbeat_task is not None:
-            heartbeat_task.cancel()
-            try:
-                await heartbeat_task
-            except asyncio.CancelledError:
-                pass
-        for binding in reversed(bindings):
-            await asyncio.to_thread(binding.mqtt_service.stop)
         if runtime_state is not None:
             runtime_state.set_telegram("stopped")
 
@@ -298,7 +262,7 @@ def create_application(
     stop_request = ThreadSafeApplicationStop(application.stop_running)
     application.bot_data["request_stop"] = stop_request
     router_state = runtime_state or RuntimeState(statistics_enabled=False)
-    router = BridgeRouter(bindings, router_state, ui_display_name)
+    router = router or BridgeRouter(bindings, router_state, ui_display_name)
     application.bot_data["router"] = router
     application.bot_data["chat_dispatcher"] = router if runtime_state is not None else None
     application.add_handler(CommandHandler("start", start))
@@ -339,4 +303,4 @@ def create_application(
 def start_bot(application: Application) -> None:
     """Run the Telegram polling loop until shutdown."""
     logger.info("正在啟動 Telegram Bot 輪詢…")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)

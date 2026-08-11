@@ -3,7 +3,6 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
-import subprocess
 import sys
 import winreg
 from pathlib import Path
@@ -15,25 +14,6 @@ from app_paths import application_dir
 logger = logging.getLogger(__name__)
 AUTOSTART_NAME = "MeshBridge"
 LEGACY_AUTOSTART_NAME = "MeshTelegram Bridge"
-_WINDOW_PROCEDURES: list[object] = []
-
-
-def _settings_command() -> list[str]:
-    directory = application_dir()
-    executable = directory / "MeshBridgeSettings.exe"
-    if executable.exists():
-        command = [str(executable)]
-    else:
-        command = [sys.executable, str(directory / "settings_ui.py")]
-    return command
-
-
-def open_settings() -> None:
-    subprocess.Popen(
-        _settings_command(),
-        cwd=application_dir(),
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
 
 
 def set_console_visible(visible: bool) -> None:
@@ -49,60 +29,13 @@ def set_console_visible(visible: bool) -> None:
         ctypes.windll.user32.ShowWindow(window, 5 if visible else 0)
 
 
-def minimize_console_close_to_tray() -> None:
-    """Turn the console close button into a hide-to-tray action."""
-    if os.name != "nt":
-        return
-    window = ctypes.windll.kernel32.GetConsoleWindow()
-    if not window:
-        return
-    user32 = ctypes.windll.user32
-    callback_type = ctypes.WINFUNCTYPE(
-        ctypes.c_ssize_t,
-        ctypes.c_void_p,
-        ctypes.c_uint,
-        ctypes.c_size_t,
-        ctypes.c_ssize_t,
-    )
-    user32.SetWindowLongPtrW.restype = ctypes.c_void_p
-    user32.SetWindowLongPtrW.argtypes = (
-        ctypes.c_void_p,
-        ctypes.c_int,
-        ctypes.c_void_p,
-    )
-    user32.GetWindowLongPtrW.restype = ctypes.c_void_p
-    user32.GetWindowLongPtrW.argtypes = (ctypes.c_void_p, ctypes.c_int)
-    user32.CallWindowProcW.restype = ctypes.c_ssize_t
-    old_procedure = user32.GetWindowLongPtrW(window, -4)
-
-    @callback_type
-    def window_procedure(hwnd, message, wparam, lparam):
-        if message == 0x0010:  # WM_CLOSE
-            user32.ShowWindow(hwnd, 0)
-            return 0
-        return user32.CallWindowProcW(
-            old_procedure,
-            hwnd,
-            message,
-            wparam,
-            lparam,
-        )
-
-    user32.SetWindowLongPtrW(
-        window,
-        -4,
-        ctypes.cast(window_procedure, ctypes.c_void_p),
-    )
-    _WINDOW_PROCEDURES.append(window_procedure)
-
-
 def sync_autostart(enabled: bool) -> None:
     if os.name != "nt":
         return
     if getattr(sys, "frozen", False):
-        command = f'"{sys.executable}"'
+        command = f'"{sys.executable}" --autostart'
     else:
-        command = f'"{sys.executable}" "{application_dir() / "main.py"}"'
+        command = f'"{sys.executable}" "{application_dir() / "main.py"}" --autostart'
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     with winreg.OpenKey(
         winreg.HKEY_CURRENT_USER,
@@ -124,8 +57,26 @@ def sync_autostart(enabled: bool) -> None:
 
 
 class TrayService:
-    def __init__(self, stop_callback: Callable[[], None]) -> None:
-        self.stop_callback = stop_callback
+    def __init__(
+        self,
+        exit_callback: Callable[[], None],
+        *,
+        show_callback: Callable[[], None] | None = None,
+        settings_callback: Callable[[], None] | None = None,
+        start_callback: Callable[[], None] | None = None,
+        stop_callback: Callable[[], None] | None = None,
+        restart_callback: Callable[[], None] | None = None,
+        status_callback: Callable[[], str] | None = None,
+        running_callback: Callable[[], bool] | None = None,
+    ) -> None:
+        self.exit_callback = exit_callback
+        self.show_callback = show_callback or (lambda: None)
+        self.settings_callback = settings_callback or self.show_callback
+        self.start_callback = start_callback or (lambda: None)
+        self.stop_callback = stop_callback or exit_callback
+        self.restart_callback = restart_callback or (lambda: None)
+        self.status_callback = status_callback or (lambda: "橋接服務：狀態未知")
+        self.running_callback = running_callback or (lambda: False)
         self._icon = None
 
     def start(self) -> None:
@@ -137,18 +88,35 @@ class TrayService:
         draw.ellipse((8, 8, 56, 56), outline="white", width=5)
         draw.line((18, 39, 31, 25, 45, 40), fill="white", width=5)
 
-        def show_settings(icon=None, item=None) -> None:
-            open_settings()
+        def invoke(callback):
+            def wrapped(icon=None, item=None) -> None:
+                callback()
+            return wrapped
 
         def exit_bridge(icon=None, item=None) -> None:
-            self.stop_callback()
+            self.exit_callback()
 
         self._icon = pystray.Icon(
             "MeshBridge",
             image,
             "MeshBridge",
             menu=pystray.Menu(
-                pystray.MenuItem("設定", show_settings, default=True),
+                pystray.MenuItem(lambda item: self.status_callback(), None, enabled=False),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("顯示 MeshBridge", invoke(self.show_callback)),
+                pystray.MenuItem("設定", invoke(self.settings_callback), default=True),
+                pystray.MenuItem(
+                    "啟動橋接服務",
+                    invoke(self.start_callback),
+                    enabled=lambda item: not self.running_callback(),
+                ),
+                pystray.MenuItem(
+                    "停止橋接服務",
+                    invoke(self.stop_callback),
+                    enabled=lambda item: self.running_callback(),
+                ),
+                pystray.MenuItem("重新啟動橋接服務", invoke(self.restart_callback)),
+                pystray.Menu.SEPARATOR,
                 pystray.MenuItem("結束", exit_bridge),
             ),
         )

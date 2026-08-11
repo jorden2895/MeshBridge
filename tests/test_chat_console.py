@@ -1,9 +1,6 @@
 import asyncio
 import sys
-import tempfile
 import unittest
-import urllib.error
-import urllib.request
 from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
@@ -15,8 +12,7 @@ import mqtt_service as mqtt_service_module
 from config import AppConfig
 from meshtastic_codec import channel_hash, crypt_payload
 from mqtt_service import MqttService
-from runtime_state import ChatApiError, RuntimeState, StatusApiServer
-from status_client import fetch_messages, send_chat_message
+from runtime_state import ChatApiError, RuntimeState
 from telegram_bridge import LocalChatDispatcher, RouteBinding, handle_message
 
 try:
@@ -71,55 +67,22 @@ class ChatRuntimeStateTests(unittest.TestCase):
 
         self.assertEqual(RuntimeState().messages_after()["messages"], [])
 
-
-class ChatApiTests(unittest.TestCase):
-    def test_authenticated_client_reads_and_sends_messages(self):
-        with tempfile.TemporaryDirectory() as directory:
-            discovery = Path(directory) / "status.json"
-            state = RuntimeState()
-            state.record_message(
-                route_id="route-1",
-                source="meshtastic",
-                sender="!00000001",
-                text="received",
-                destinations=("telegram",),
-            )
-            callback = Mock(return_value={"sent": ["telegram"], "errors": {}})
-            server = StatusApiServer(state, discovery, send_callback=callback)
-            server.start()
-            try:
-                messages = fetch_messages(discovery)
-                result = send_chat_message(
-                    discovery,
-                    route_id="route-1",
-                    text="outgoing",
-                    target="telegram",
-                )
-            finally:
-                server.stop()
-
-        self.assertEqual(messages["messages"][0]["text"], "received")
-        self.assertEqual(result["sent"], ["telegram"])
-        callback.assert_called_once_with(
-            {"route_id": "route-1", "text": "outgoing", "target": "telegram"}
+    def test_new_runtime_generation_resets_message_cursor(self):
+        previous = RuntimeState()
+        generation = previous.messages_after()["generation"]
+        current = RuntimeState()
+        current.record_message(
+            route_id="route-1",
+            source="telegram",
+            sender="TG:1",
+            text="new runtime message",
+            destinations=(),
         )
 
-    def test_messages_endpoint_rejects_missing_token(self):
-        with tempfile.TemporaryDirectory() as directory:
-            discovery = Path(directory) / "status.json"
-            server = StatusApiServer(RuntimeState(), discovery)
-            location = server.start()
-            try:
-                with self.assertRaises(urllib.error.HTTPError) as captured:
-                    urllib.request.urlopen(  # nosec B310 - loopback test server
-                        f"http://127.0.0.1:{location.port}/messages",
-                        timeout=1,
-                    )
-                captured.exception.close()
-            finally:
-                server.stop()
+        history = current.messages_after(50, generation)
 
-        self.assertEqual(captured.exception.code, 401)
+        self.assertEqual([item["id"] for item in history["messages"]], [1])
+        self.assertNotEqual(history["generation"], generation)
 
 
 class LocalChatDispatcherTests(unittest.TestCase):
@@ -173,7 +136,7 @@ class LocalChatDispatcherTests(unittest.TestCase):
         dispatcher = LocalChatDispatcher((binding,), self.state)
         loop = Mock()
         loop.is_closed.return_value = False
-        dispatcher.bind(loop, Mock())
+        dispatcher.bind_telegram(loop, Mock())
         completed = Mock()
         completed.result.return_value = None
 
@@ -401,7 +364,7 @@ class MeshtasticMonitoringTests(unittest.TestCase):
         config = AppConfig.from_dict(valid_config())
         state = RuntimeState()
         service = MqttService(config, runtime_state=state)
-        service.set_telegram_callback(Mock())
+        service.set_message_callback(Mock())
         envelope = mqtt_service_module.mqtt_pb2.ServiceEnvelope()
         packet = envelope.packet
         packet.id = 77

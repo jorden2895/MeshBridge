@@ -8,8 +8,8 @@ from typing import Any
 from meshtastic_codec import normalize_channel_key
 
 
-MAX_ROUTES = 5
-DEFAULT_STATUS_API_ENABLED = True
+MAX_ROUTES = 20
+CURRENT_CONFIG_VERSION = 3
 DEFAULT_UPDATE_INTERVAL_HOURS = 24
 DEFAULT_BRIDGE_UI_DISPLAY_NAME = "Bridge UI"
 
@@ -111,6 +111,11 @@ class BridgeUiConfig:
 
 
 @dataclass(frozen=True)
+class AppearanceConfig:
+    theme: str = "system"
+
+
+@dataclass(frozen=True)
 class RouteConfig:
     name: str
     enabled: bool
@@ -124,18 +129,6 @@ class RouteConfig:
 
 
 @dataclass(frozen=True)
-class StatusConfig:
-    enabled: bool = DEFAULT_STATUS_API_ENABLED
-
-
-@dataclass(frozen=True)
-class TrayConfig:
-    enabled: bool = False
-    show_console: bool = True
-    autostart: bool = False
-
-
-@dataclass(frozen=True)
 class UpdateConfig:
     enabled: bool = False
     mode: str = "notify"
@@ -145,9 +138,7 @@ class UpdateConfig:
 @dataclass(frozen=True)
 class FeatureConfig:
     statistics_enabled: bool
-    multi_route_enabled: bool
-    status: StatusConfig
-    tray: TrayConfig
+    autostart: bool
     updates: UpdateConfig
 
 
@@ -161,6 +152,8 @@ class AppConfig:
     bridge_ui: BridgeUiConfig
     routes: tuple[RouteConfig, ...]
     features: FeatureConfig
+    config_version: int = CURRENT_CONFIG_VERSION
+    appearance: AppearanceConfig = AppearanceConfig()
 
     @property
     def active_routes(self) -> tuple[RouteConfig, ...]:
@@ -183,12 +176,20 @@ class AppConfig:
         mqtt_raw = _object(raw, "mqtt")
         node_raw = _object(raw, "node")
         bridge_ui_raw = _object(raw, "bridge_ui", required=False)
+        appearance_raw = _object(raw, "appearance", required=False)
+
+        config_version = _integer(raw.get("config_version", 2), "config_version")
+        if config_version not in {2, CURRENT_CONFIG_VERSION}:
+            raise ConfigError(f"不支援的設定版本：{config_version}")
+        theme = str(appearance_raw.get("theme", "system")).strip().lower()
+        if theme not in {"system", "light", "dark"}:
+            raise ConfigError("「appearance.theme」必須是 system、light 或 dark")
 
         bot_token = str(telegram_raw.get("bot_token", "")).strip()
         legacy_target = telegram_raw.get("target_chat_id")
         discord_enabled = _bool(discord_raw.get("enabled"), "discord.enabled", False)
         discord_bot_token = str(discord_raw.get("bot_token", "")).strip()
-        if discord_enabled and not discord_bot_token:
+        if config_version < CURRENT_CONFIG_VERSION and discord_enabled and not discord_bot_token:
             raise ConfigError("啟用 Discord 時，「discord.bot_token」為必填欄位")
 
         broker = _required_text(mqtt_raw, "broker", "mqtt")
@@ -359,7 +360,6 @@ class AppConfig:
 
         first_route = routes[0]
         features_raw = _object(raw, "features", required=False)
-        status_raw = _object(features_raw, "status_api", required=False)
         tray_raw = _object(features_raw, "tray", required=False)
         updates_raw = _object(features_raw, "updates", required=False)
 
@@ -373,36 +373,17 @@ class AppConfig:
         if not 1 <= interval_hours <= 720:
             raise ConfigError("「features.updates.interval_hours」必須介於 1 到 720")
 
+        autostart_value = features_raw.get("autostart", tray_raw.get("autostart"))
         features = FeatureConfig(
             statistics_enabled=_bool(
                 features_raw.get("statistics_enabled"),
                 "features.statistics_enabled",
                 True,
             ),
-            multi_route_enabled=_bool(
-                features_raw.get("multi_route_enabled"),
-                "features.multi_route_enabled",
+            autostart=_bool(
+                autostart_value,
+                "features.autostart",
                 False,
-            ),
-            status=StatusConfig(
-                enabled=_bool(
-                    status_raw.get("enabled"),
-                    "features.status_api.enabled",
-                    DEFAULT_STATUS_API_ENABLED,
-                )
-            ),
-            tray=TrayConfig(
-                enabled=_bool(tray_raw.get("enabled"), "features.tray.enabled", False),
-                show_console=_bool(
-                    tray_raw.get("show_console"),
-                    "features.tray.show_console",
-                    True,
-                ),
-                autostart=_bool(
-                    tray_raw.get("autostart"),
-                    "features.tray.autostart",
-                    False,
-                ),
             ),
             updates=UpdateConfig(
                 enabled=_bool(
@@ -447,6 +428,8 @@ class AppConfig:
             bridge_ui=BridgeUiConfig(display_name=display_name),
             routes=routes,
             features=features,
+            config_version=CURRENT_CONFIG_VERSION,
+            appearance=AppearanceConfig(theme=theme),
         )
         config.active_routes
         return config

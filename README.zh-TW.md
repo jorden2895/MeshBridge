@@ -1,214 +1,91 @@
 # MeshBridge
 
-[English](README.md) | 繁體中文
+MeshBridge 是 Windows 可攜式文字訊息橋接工具，可在 Meshtastic MQTT、Telegram 與 Discord 之間轉送訊息。3.0 版將 Bridge、設定、聊天監看、狀態儀表板、日誌、更新與系統匣整合到同一個 `MeshBridge.exe`。
 
-MeshBridge 可在加密的 Meshtastic MQTT 頻道、經授權的 Telegram
-聊天室／主題與 Discord 文字頻道之間，雙向轉送文字訊息。每條路由可個別選用
-Telegram、Discord 或同時使用兩者。
+[English README](README.md)
 
 ## 主要功能
 
-- 在 Meshtastic、Telegram 與 Discord 之間轉送相同的純文字訊息。
-- 每個目的地獨立處理；單一平台暫時失敗不會阻止其他平台接收。
-- Discord 圖片、附件、貼圖、空白內容與 Bot 訊息不會轉送。
-- 僅接受 channel hash 正確的加密封包；拒絕 MQTT plaintext `decoded` 封包。
-- 依發送節點與 packet ID，在 60 秒內過濾 MQTT 重送封包。
-- 靜默忽略未授權 Telegram 聊天室的訊息與命令。
-- 偵測 Telegram 重複輪詢，顯示清楚的中文原因並停止衝突實例。
-- 遵守 Meshtastic 233 bytes UTF-8 payload 上限；過長的 Telegram 訊息會直接
-  丟棄且不傳送。
-- 同時顯示終端日誌並寫入 UTF-8 輪替日誌；預設 `INFO` 不記錄訊息內容。
-- 提供繁體中文設定工具，可驗證設定並分別測試 Telegram、MQTT 與 Discord 連線。
-- 設定工具提供聊天分頁，可監看所有啟用路由，並發送文字到 Meshtastic、
-  Telegram、Discord 或同時傳送到全部平台。
-- 可設定最多五組 Meshtastic 頻道、Telegram 聊天室／主題與 Discord 文字頻道路由。
-- 設定工具會顯示 MQTT、Telegram、Discord 即時狀態及本次執行統計。
-- 可選用系統匣、登入後自動啟動與正式 Release 更新通知；預設皆不啟用。
+- 單一 Windows 執行檔、單一程序
+- Meshtastic ↔ Telegram ↔ Discord 三方純文字橋接
+- 最多 20 條可個別啟用或停用的路由
+- 每條路由可選 Telegram、Discord 或同時使用兩者
+- 顯示 Bridge、平台、路由與本次執行統計的儀表板
+- 內建聊天監看與訊息發送，支援 `Ctrl+Enter`
+- 路由清單可新增、刪除、排序與編輯
+- 日誌會遮蔽敏感資訊，並可選擇「INFO（一般）」、「WARNING（警告）」或「DEBUG（詳細）」篩選
+- 介面可選系統、淺色或深色主題
+- 固定啟用系統匣，可選擇登入 Windows 後自動啟動
+- 單一實例：再次執行程式會喚醒既有視窗
+- 僅檢查正式 Release，下載時驗證 GitHub SHA-256
 
-## 使用 Windows 執行檔快速開始
+超過 Meshtastic 233 bytes 上限的訊息會直接丟棄，不另行通知。Discord 的圖片、附件及其他非文字內容會忽略。聊天紀錄與統計只保留在記憶體，關閉程式後歸零。
 
-1. 從[最新 GitHub Release](https://github.com/jorden2895/MeshBridge/releases/latest)
-   下載 `MeshBridge.exe` 與 `MeshBridgeSettings.exe`。
-2. 將兩個檔案放在同一個資料夾。
-3. 開啟 `MeshBridgeSettings.exe`。
-4. 填入 MQTT 與虛擬節點設定，並在每條路由勾選 Telegram、Discord 或兩者；
-   只需填入已選平台的 Bot Token 與目的地 ID，然後按下「驗證」。
-5. 按下「測試連線」檢查已啟用的服務。這項測試不會啟動
-   Bridge，也不會傳送訊息。
-6. 儲存設定後，啟動 `MeshBridge.exe`。
-7. Bridge 執行期間，可在設定工具的「聊天」分頁監看訊息，或選擇路由後發送。
+## 快速開始
 
-設定工具會在執行檔旁建立 `config.json`。此檔案可能包含 Telegram／Discord
-Bot Token、MQTT 密碼與 Meshtastic 頻道金鑰，請勿公開、分享或提交至 Git。
+1. 從最新 GitHub Release 下載 `MeshBridge.exe`。
+2. 放到可寫入的資料夾後執行。
+3. 依序完成 MQTT、平台、節點與路由設定。
+4. 先按「測試連線」，再按「儲存並套用」。
 
-2.0 版將執行檔改名為 `MeshBridge.exe` 與 `MeshBridgeSettings.exe`，既有
-`config.json` 可直接沿用。從 1.x 升級時請手動下載這兩個新檔案，因為舊版自動
-安裝程式仍會尋找先前的資產檔名。
+按視窗右上角 X 只會縮到系統匣。系統匣右鍵選單可顯示主視窗、開啟設定、啟動／停止／重新啟動 Bridge，或完整結束程式。雙擊系統匣圖示會直接開啟「設定」頁；單擊不執行動作。
 
-## 設定檔
+`config.json` 會放在執行檔旁，可能包含 Bot Token、MQTT 帳密及頻道金鑰，請勿公開或提交到 Git。
 
-從原始碼執行時，請以 `config.json.example` 為範本。舊版單一路由
-`config.json` 可直接沿用；新功能由 `features` 控制：
+## 路由設定
 
-- `logging_level`：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL`。
-- `telegram`：Bot Token 與唯一獲准使用 Bridge 的聊天室 ID。
-- `discord`：Discord Bot Token；是否啟用會依各路由的選項自動決定。
-- `mqtt`：Broker 位址、連接埠、帳號、根主題、頻道名稱與頻道金鑰。
-- `node`：Meshtastic 虛擬節點 ID、完整名稱與簡短名稱。
-- `bridge_ui.display_name`：介面發送訊息的前綴與監看來源名稱；舊設定未提供時
-  預設為 `Bridge UI`。
-- `routes`：最多五組；每組包含 Meshtastic 頻道與金鑰，並以
-  `telegram_enabled`、`discord_enabled` 個別選擇目的地。每組至少啟用一個平台；
-  只有啟用的平台需要填寫聊天室／頻道 ID。Discord ID 以字串保存。
-- `features`：狀態統計、本機狀態 API、系統匣及更新選項。舊版的
-  `multi_route_enabled` 會繼續接受，但所有勾選啟用的路由都會直接生效。
+每條啟用路由代表一個 Meshtastic 頻道，並可傳送至 Telegram、Discord 或兩者。每條路由至少要啟用一個目的地，支援只使用 Telegram 或只使用 Discord。
 
-`mqtt.root_topic` 會自動移除多餘的前後斜線並補上結尾斜線，但禁止 MQTT
-wildcard `+`、`#`。MQTT 帳號與密碼可同時留空以使用匿名 Broker。節點簡短
-名稱最多四個字元。
+每條路由包含：
 
-程式會在建立網路連線前驗證所有必填設定。只有至少一組路由啟用某平台時，
-才要求該平台的 Bot Token；每條路由至少必須啟用 Telegram 或 Discord。首次啟動的必要服務若無法連線，
-Bridge 會顯示原因並停止。
+- 不重複的路由名稱與 Meshtastic 頻道名稱
+- 解碼後為 16、24 或 32 bytes 的 Base64 頻道金鑰
+- 選用的 Telegram 聊天室／主題
+- 選用的 Discord 頻道
 
-## 狀態、系統匣與更新
+## 從 v2 升級
 
-本機狀態 API 只監聽 `127.0.0.1`，使用每次啟動隨機產生的權杖；設定工具將
-超過五秒未更新的心跳視為離線。狀態內容不包含 Bot Token、MQTT 帳號或頻道
-金鑰，最近錯誤中的已知敏感值也會遮蔽。所有統計在 Bridge 重啟後歸零。
+v3 第一次讀取 v2 設定時，會先建立 `config.v2.backup.json`，再以原子寫入方式把 `config.json` 遷移到 `config_version: 3`。若遷移失敗，原始檔不會被修改，程式會進入設定引導模式且不建立網路連線。
 
-設定工具的「聊天」分頁會監看所有啟用路由，僅在 Bridge 記憶體保留最近 200
-筆訊息；不會寫入磁碟，Bridge 重啟後即清空。發送時可選擇 Meshtastic、
-Telegram、Discord 或全部平台，各目的地會分別回報結果。從介面發出的訊息會使用
-設定的顯示名稱作為前綴（例如 `[基地台]: `），監看來源也會顯示相同名稱。
-傳送至 Meshtastic 時，包含此前綴的完整 UTF-8 內容不得超過 233 bytes。
-Bridge 未執行或停用本機狀態 API 時，聊天功能不可使用。
+v3 移除已失效的 `multi_route_enabled`、`status_api`、`tray.enabled`、`tray.show_console`、全域 `discord.enabled` 與舊單一路由欄位。`MeshBridgeSettings.exe` 與 `open_settings.bat` 已不再使用。
 
-Discord 來源使用 `[DC:username]: ` 前綴，Telegram 來源使用 `[TG:UID]: `。
-Discord 單則訊息上限為 2,000 字元；傳往 Meshtastic 時仍以包含前綴後的 233
-bytes 為上限。
+## 從原始碼執行
 
-系統匣模式整合於 `MeshBridge.exe`。雙擊圖示或選擇「設定」可開啟
-設定工具，選單也可結束 Bridge。Release 執行檔預設不建立主控台；未啟用系統匣
-或勾選「顯示主控台」時才顯示。
-
-更新功能只查詢正式 GitHub Release，不傳送裝置識別或使用統計。預設只通知，
-也可設定為下載或延後安裝；下載的兩個 EXE 必須通過 GitHub 提供的 SHA-256
-摘要驗證。預設檢查間隔為 24 小時，也可在設定工具立即檢查。
-
-### 取得 Telegram 聊天室 ID
-
-請將 Bot 加入預定使用的私人聊天室或群組。基於安全性，Bot 只會回覆已設定
-的聊天室，因此首次設定時，需透過 Telegram Bot API 或可信任的 Chat ID 工具
-取得 ID，再填入設定工具並重新啟動 Bridge。
-
-同一個 Telegram Bot Token 同時間只能由一個程式進行輪詢。
-
-### 設定 Discord Bot
-
-1. 前往 [Discord Developer Portal](https://discord.com/developers/applications)
-   建立 Application 與 Bot，複製 Bot Token。
-2. 在 **Bot → Privileged Gateway Intents** 啟用 **Message Content Intent**；
-   Presence Intent 與 Server Members Intent 不需要啟用。
-3. 在 **Installation** 使用 `bot` scope 將 Bot 加入伺服器。Bot 最低需要
-   **View Channels**、**Send Messages** 與 **Read Message History**，不需要
-   Administrator。
-4. 在 Discord **使用者設定 → 進階**啟用開發者模式，對文字頻道按右鍵並選擇
-   **複製頻道 ID**。
-5. 在對應路由勾選 Discord、貼上 Token，並填入該路由的頻道 ID。
-
-Bot Token 等同密碼，不可提交至 Git。若 Token 外洩，請立即在 Developer Portal
-重設。沒有啟用 Message Content Intent 時，Bot 無法取得一般訊息本文。
-
-## 在 Windows 從原始碼執行
-
-需求：
-
-- Python 3.10 或更新版本
-- 已安裝 Python Launcher（`py`）的 Windows
-- MQTT Broker 與 Meshtastic 頻道
-- 若路由使用 Telegram：Telegram Bot Token 與目標聊天室 ID
-- 若路由使用 Discord：Discord Bot Token 與文字頻道 ID
-
-雙擊 `setup_windows.bat`，程式會建立或修復 `.venv`，並安裝鎖定版本的執行
-依賴。請勿從其他電腦複製 `.venv`，因為虛擬環境包含該電腦的絕對路徑。
-
-手動安裝：
+建議在 Windows 使用 Python 3.14。
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-Copy-Item config.json.example config.json
+.\setup_windows.bat
+.\.venv\Scripts\python.exe .\main.py
 ```
 
-開啟設定工具：
+不要把 `.venv` 複製到其他電腦；每台開發電腦都應自行執行 `setup_windows.bat`。
 
-```powershell
-.\open_settings.bat
-```
-
-執行 Bridge：
-
-```powershell
-.\run_meshbridge.bat
-```
-
-也可以執行 `python main.py`。按下 `Ctrl+C` 可安全停止程式。
-
-查看目前版本：
-
-```powershell
-python main.py --version
-```
-
-## 日誌
-
-Bridge 會在程式旁寫入 `MeshBridge.log`，單一檔案上限為 1 MiB，最多
-保留五份；終端輸出仍會同時顯示。可從設定工具按下「開啟日誌資料夾」。
-
-預設 `INFO` 只記錄連線及轉送相關資訊，不包含訊息本文。`DEBUG` 可能包含訊息
-內容，僅建議在受控的除錯環境中暫時使用。
-
-## 常見問題
-
-- **批次檔閃一下就關閉：**請開啟命令提示字元或 PowerShell，在視窗中執行
-  `.bat`，即可保留並閱讀錯誤訊息。
-- **複製的 `.venv` 指向另一台電腦的 Python：**刪除該 `.venv`，並在目標
-  電腦重新執行 `setup_windows.bat`。
-- **Telegram 顯示重複輪詢衝突：**停止其他使用相同 Bot Token 的程式或電腦，
-  僅保留一個 Bridge 實例。
-- **MQTT、Telegram 或 Discord 無法連線：**開啟設定工具並使用「測試連線」，
-  各項服務會分別顯示結果。
-- **Discord Bot 上線但不轉送文字：**確認已啟用 Message Content Intent，且 Bot
-  在該文字頻道具有查看及傳送訊息權限。
-- **Telegram 訊息沒有被轉送：**確認訊息來自指定聊天室，且完整 UTF-8 內容
-  未超過 233 bytes。
-
-## 開發與測試
-
-執行不會連接 Telegram、Discord 或 MQTT 的單元測試：
+## 測試與封裝
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-建置兩個獨立執行檔：
-
-```powershell
+.\.venv\Scripts\python.exe -m bandit -r . -x ./.venv,./build,./dist,./tests -ll
+.\.venv\Scripts\python.exe -m pip_audit -r requirements.txt
 .\build_release.ps1
 ```
 
-建置流程以 `version.py` 作為唯一版本來源，並驗證 GitHub Release Tag 是否與
-程式版本一致。
+封裝結果只會產生 `dist\MeshBridge.exe`。可用下列方式確認版本：
 
-## 授權與上游專案
+```powershell
+.\dist\MeshBridge.exe --version
+```
 
-MeshBridge 最初衍生自
-[pdxlocations/connect](https://github.com/pdxlocations/connect)，該專案是透過
-MQTT 運作、不需要實體節點的 Meshtastic 用戶端。本專案已大幅修改為專用的
-Meshtastic、Telegram 與 Discord 文字橋接程式，並加入設定驗證、繁體中文設定
-UI、安全檢查與自動化測試。
+## 設定範例
 
-上游專案與本衍生作品皆採用 GNU General Public License，詳見
-[LICENSE](LICENSE)。
+請參考 [`config.json.example`](config.json.example)，不要提交實際使用的 `config.json`。
+
+## 安全說明
+
+- v3 的聊天、狀態及日誌都留在同一程序內，不再開放 localhost 狀態 HTTP API。
+- 已知帳密、Token 與金鑰會從介面日誌及錯誤中遮蔽。
+- 自動更新只接受官方 Release 中具 GitHub SHA-256 摘要的 `MeshBridge.exe`。
+- Meshtastic 頻道加密不能取代可信任的 Broker 或傳輸層加密。
+
+## 授權
+
+請參考 [LICENSE](LICENSE)。

@@ -35,7 +35,7 @@ class MqttService:
         runtime_state: RuntimeState | None = None,
         route_id: str = "route-1",
     ):
-        self.telegram_callback = None
+        self.message_callback = None
         self.fatal_callback = None
         # Store tuples of ((from_node_id, packet_id), timestamp) for MQTT redelivery deduplication.
         self.recent_packets = deque(maxlen=200)
@@ -96,8 +96,8 @@ class MqttService:
         if self.runtime_state is not None:
             self.runtime_state.increment(key)
 
-    def set_telegram_callback(self, callback):
-        self.telegram_callback = callback
+    def set_message_callback(self, callback):
+        self.message_callback = callback
 
     def set_fatal_callback(self, callback):
         self.fatal_callback = callback
@@ -230,11 +230,11 @@ class MqttService:
                         destinations=("telegram",),
                     )
 
-                if self.telegram_callback is None:
+                if self.message_callback is None:
                     self._increment("other_dropped")
                     logger.error("Telegram callback is not configured; dropping received message.")
                     return
-                self.telegram_callback(message_to_forward)
+                self.message_callback(message_to_forward)
 
         except Exception as e:
             logger.error(f"Error processing incoming MQTT message: {e}", exc_info=True)
