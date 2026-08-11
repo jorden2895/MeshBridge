@@ -81,7 +81,7 @@ Telegram、Discord 或全部平台，各目的地會分別回報結果。從介�
 傳送至 Meshtastic 時，包含此前綴的完整 UTF-8 內容不得超過 233 bytes。
 Bridge 未執行或停用本機狀態 API 時，聊天功能不可使用。
 
-Discord 來源使用 `[DC:@username]: ` 前綴，Telegram 來源使用 `[TG:UID]: `。
+Discord 來源使用 `[DC:username]: ` 前綴，Telegram 來源使用 `[TG:UID]: `。
 Discord 單則訊息上限為 2,000 字元；傳往 Meshtastic 時仍以包含前綴後的 233
 bytes 為上限。
 

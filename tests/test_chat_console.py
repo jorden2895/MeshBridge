@@ -332,11 +332,11 @@ class BridgeRouterTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.binding.mqtt_service.send_message.assert_called_once_with(
-            "[DC:@bob]: hello from discord"
+            "[DC:bob]: hello from discord"
         )
         recorded = self.state.messages_after()["messages"][0]
         self.assertEqual(recorded["source"], "discord")
-        self.assertEqual(recorded["sender"], "@bob")
+        self.assertEqual(recorded["sender"], "bob")
         self.assertEqual(recorded["destinations"], ["meshtastic", "telegram"])
 
 

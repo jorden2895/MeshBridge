@@ -94,7 +94,7 @@ name appears as their source in the monitor. Meshtastic-bound text, including
 that prefix, must fit the 233-byte UTF-8 payload limit. The chat tab is
 unavailable when the Bridge is stopped or the local status API is disabled.
 
-Discord-originated text uses the `[DC:@username]: ` prefix; Telegram-originated
+Discord-originated text uses the `[DC:username]: ` prefix; Telegram-originated
 text uses `[TG:UID]: `. Discord messages are limited to 2,000 characters, while
 Meshtastic still applies its 233-byte limit after adding the prefix.
 

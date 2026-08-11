@@ -287,7 +287,7 @@ class BridgeRouter(LocalChatDispatcher):
         if binding is None:
             self.runtime_state.increment("other_dropped")
             return
-        identity = f"@{username}" if username else str(user_id)
+        identity = username or str(user_id)
         formatted_text = f"[DC:{identity}]: {text}"
         destinations: list[str] = []
         try:
