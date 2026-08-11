@@ -76,8 +76,9 @@ def _validate_root_topic(value: str) -> str:
 
 @dataclass(frozen=True)
 class TelegramConfig:
-    bot_token: str
-    target_chat_id: int
+    bot_token: str = ""
+    target_chat_id: int | None = None
+    enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -115,9 +116,11 @@ class RouteConfig:
     enabled: bool
     channel_name: str
     channel_key: bytes
-    target_chat_id: int
+    target_chat_id: int | None
     topic_id: int | None = None
     discord_channel_id: str | None = None
+    telegram_enabled: bool = True
+    discord_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,8 +164,7 @@ class AppConfig:
 
     @property
     def active_routes(self) -> tuple[RouteConfig, ...]:
-        candidates = self.routes if self.features.multi_route_enabled else self.routes[:1]
-        active = tuple(route for route in candidates if route.enabled)
+        active = tuple(route for route in self.routes if route.enabled)
         if not active:
             raise ConfigError("至少必須啟用一組路由")
         return active
@@ -176,13 +178,13 @@ class AppConfig:
         if logging_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigError("「logging_level」必須是 DEBUG、INFO、WARNING、ERROR 或 CRITICAL")
 
-        telegram_raw = _object(raw, "telegram")
+        telegram_raw = _object(raw, "telegram", required=False)
         discord_raw = _object(raw, "discord", required=False)
         mqtt_raw = _object(raw, "mqtt")
         node_raw = _object(raw, "node")
         bridge_ui_raw = _object(raw, "bridge_ui", required=False)
 
-        bot_token = _required_text(telegram_raw, "bot_token", "telegram")
+        bot_token = str(telegram_raw.get("bot_token", "")).strip()
         legacy_target = telegram_raw.get("target_chat_id")
         discord_enabled = _bool(discord_raw.get("enabled"), "discord.enabled", False)
         discord_bot_token = str(discord_raw.get("bot_token", "")).strip()
@@ -237,6 +239,8 @@ class AppConfig:
                     channel_name=channel_name,
                     channel_key=channel_key,
                     target_chat_id=_integer(legacy_target, "telegram.target_chat_id"),
+                    telegram_enabled=True,
+                    discord_enabled=False,
                 ),
             )
         else:
@@ -278,18 +282,39 @@ class AppConfig:
                     or int(discord_channel_id) <= 0
                 ):
                     raise ConfigError(f"「{path}.discord_channel_id」必須是正整數字串")
+                target_value = route_raw.get("target_chat_id")
+                target_chat_id = (
+                    None
+                    if target_value in (None, "")
+                    else _integer(target_value, f"{path}.target_chat_id")
+                )
+                telegram_enabled = _bool(
+                    route_raw.get("telegram_enabled"),
+                    f"{path}.telegram_enabled",
+                    target_chat_id is not None,
+                )
+                discord_route_enabled = _bool(
+                    route_raw.get("discord_enabled"),
+                    f"{path}.discord_enabled",
+                    discord_enabled and discord_channel_id is not None,
+                )
+                if not telegram_enabled and not discord_route_enabled:
+                    raise ConfigError(f"「{path}」至少必須啟用 Telegram 或 Discord")
+                if telegram_enabled and target_chat_id is None:
+                    raise ConfigError(f"啟用 Telegram 時，「{path}.target_chat_id」為必填欄位")
+                if discord_route_enabled and discord_channel_id is None:
+                    raise ConfigError(f"啟用 Discord 時，「{path}.discord_channel_id」為必填欄位")
                 parsed_routes.append(
                     RouteConfig(
                         name=name,
                         enabled=_bool(route_raw.get("enabled"), f"{path}.enabled", True),
                         channel_name=channel_name,
                         channel_key=channel_key,
-                        target_chat_id=_integer(
-                            _required(route_raw, "target_chat_id", path),
-                            f"{path}.target_chat_id",
-                        ),
+                        target_chat_id=target_chat_id,
                         topic_id=topic_id,
                         discord_channel_id=discord_channel_id,
+                        telegram_enabled=telegram_enabled,
+                        discord_enabled=discord_route_enabled,
                     )
                 )
             routes = tuple(parsed_routes)
@@ -304,7 +329,7 @@ class AppConfig:
                     raise ConfigError("每組路由名稱必須不同")
                 if route.channel_name.casefold() in channel_endpoints:
                     raise ConfigError("每組路由的 Meshtastic 頻道必須不同")
-                if telegram_endpoint in telegram_endpoints:
+                if route.telegram_enabled and telegram_endpoint in telegram_endpoints:
                     raise ConfigError("每組路由的 Telegram 聊天室／主題組合必須不同")
                 if (
                     route.discord_channel_id is not None
@@ -313,14 +338,24 @@ class AppConfig:
                     raise ConfigError("每組路由的 Discord 頻道必須不同")
                 route_names.add(normalized_name)
                 channel_endpoints.add(route.channel_name.casefold())
-                telegram_endpoints.add(telegram_endpoint)
+                if route.telegram_enabled:
+                    telegram_endpoints.add(telegram_endpoint)
                 if route.discord_channel_id is not None:
                     discord_endpoints.add(route.discord_channel_id)
 
-        if discord_enabled and not any(
-            route.enabled and route.discord_channel_id for route in routes
-        ):
+        effective_routes = routes
+        telegram_enabled = any(
+            route.enabled and route.telegram_enabled for route in effective_routes
+        )
+        discord_enabled = any(
+            route.enabled and route.discord_enabled for route in effective_routes
+        )
+        if _bool(discord_raw.get("enabled"), "discord.enabled", False) and not discord_enabled:
             raise ConfigError("啟用 Discord 時，至少一組啟用路由必須設定 Discord 頻道 ID")
+        if telegram_enabled and not bot_token:
+            raise ConfigError("至少一組路由啟用 Telegram 時，「telegram.bot_token」為必填欄位")
+        if discord_enabled and not discord_bot_token:
+            raise ConfigError("至少一組路由啟用 Discord 時，「discord.bot_token」為必填欄位")
 
         first_route = routes[0]
         features_raw = _object(raw, "features", required=False)
@@ -385,7 +420,15 @@ class AppConfig:
             logging_level=logging_level,
             telegram=TelegramConfig(
                 bot_token=bot_token,
-                target_chat_id=first_route.target_chat_id,
+                target_chat_id=next(
+                    (
+                        route.target_chat_id
+                        for route in effective_routes
+                        if route.enabled and route.telegram_enabled
+                    ),
+                    None,
+                ),
+                enabled=telegram_enabled,
             ),
             discord=DiscordConfig(
                 enabled=discord_enabled,

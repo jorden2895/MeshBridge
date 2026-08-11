@@ -5,15 +5,18 @@ import ctypes
 import logging
 import os
 import sys
+import threading
+from functools import partial
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from app_paths import application_dir
+from bridge_router import BridgeRouter, RouteBinding
 from config import ConfigError, load_config
 from discord_bridge import DiscordBridge, DiscordServiceError
 from mqtt_service import MqttService, MqttServiceError
 from runtime_state import RuntimeState, StatusApiServer
-from telegram_bridge import RouteBinding, create_application, start_bot
+from telegram_bridge import create_application, start_bot
 from tray_service import (
     TrayService,
     minimize_console_close_to_tray,
@@ -106,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
     tray_service = None
     update_monitor = None
     discord_service = None
+    headless_bindings: tuple[RouteBinding, ...] = ()
+    telegram_disabled = False
     try:
         config = load_config(application_dir() / "config.json")
         set_console_visible(
@@ -137,20 +142,27 @@ def main(argv: list[str] | None = None) -> int:
             )
             for index, route in enumerate(config.active_routes, start=1)
         )
-        telegram_app = create_application(
-            config.telegram.bot_token,
-            bindings,
-            runtime_state=runtime_state,
-            ui_display_name=config.bridge_ui.display_name,
-        )
-        request_stop = telegram_app.bot_data["request_stop"]
-        router = telegram_app.bot_data["router"]
+        stop_event = threading.Event()
+        if config.telegram.enabled:
+            telegram_app = create_application(
+                config.telegram.bot_token,
+                bindings,
+                runtime_state=runtime_state,
+                ui_display_name=config.bridge_ui.display_name,
+            )
+            request_stop = telegram_app.bot_data["request_stop"]
+            router = telegram_app.bot_data["router"]
+        else:
+            telegram_disabled = True
+            runtime_state.set_telegram("disabled")
+            request_stop = stop_event.set
+            router = BridgeRouter(bindings, runtime_state, config.bridge_ui.display_name)
         if config.discord.enabled:
             runtime_state.set_discord("starting")
             channel_routes = {
                 route.discord_channel_id: binding.mqtt_service.route_id
                 for route, binding in zip(config.active_routes, bindings)
-                if route.discord_channel_id is not None
+                if route.discord_enabled and route.discord_channel_id is not None
             }
 
             def update_discord_status(
@@ -168,11 +180,31 @@ def main(argv: list[str] | None = None) -> int:
             )
             router.bind_discord(discord_service.schedule_text)
             discord_service.start()
+        if telegram_disabled:
+            started: list[RouteBinding] = []
+
+            def fatal_mqtt(error: str) -> None:
+                logger.error("MQTT 發生致命錯誤：%s", error)
+                request_stop()
+
+            try:
+                for binding in bindings:
+                    binding.mqtt_service.set_telegram_callback(
+                        partial(router.forward_meshtastic, binding.mqtt_service.route_id)
+                    )
+                    binding.mqtt_service.set_fatal_callback(fatal_mqtt)
+                    binding.mqtt_service.start()
+                    started.append(binding)
+            except Exception:
+                for binding in reversed(started):
+                    binding.mqtt_service.stop()
+                raise
+            headless_bindings = tuple(started)
         if config.features.status.enabled:
             status_server = StatusApiServer(
                 runtime_state,
                 application_dir() / ".meshbridge-status.json",
-                send_callback=telegram_app.bot_data["chat_dispatcher"],
+                send_callback=router,
             )
             status_server.start()
         sync_autostart(config.features.tray.autostart)
@@ -194,7 +226,12 @@ def main(argv: list[str] | None = None) -> int:
                 stop_application=request_stop,
             )
             update_monitor.start()
-        start_bot(telegram_app)
+        if config.telegram.enabled:
+            start_bot(telegram_app)
+        else:
+            logger.info("MeshBridge 已就緒，可以開始轉發訊息。")
+            while not stop_event.wait(1):
+                runtime_state.heartbeat()
         return 0
     except ConfigError as exc:
         logger.error("設定錯誤：%s", exc)
@@ -223,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     finally:
+        for binding in reversed(headless_bindings):
+            binding.mqtt_service.stop()
         if discord_service is not None:
             discord_service.stop()
         if update_monitor is not None:

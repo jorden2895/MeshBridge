@@ -117,7 +117,7 @@ class LocalChatDispatcher:
                 logger.exception("Bridge UI failed to send a message to Meshtastic.")
                 errors["meshtastic"] = "Meshtastic 傳送失敗"
 
-        if target in {"telegram", "both", "all"}:
+        if target in {"telegram", "both", "all"} and binding.route.telegram_enabled:
             with self._lock:
                 loop = self._telegram_loop
                 bot = self._telegram_bot
@@ -140,7 +140,7 @@ class LocalChatDispatcher:
                     logger.exception("Bridge UI failed to send a message to Telegram.")
                     errors["telegram"] = "Telegram 傳送失敗"
 
-        if target in {"discord", "all"}:
+        if target in {"discord", "all"} and binding.route.discord_enabled:
             channel_id = binding.route.discord_channel_id
             with self._lock:
                 discord_sender = self._discord_sender
@@ -177,39 +177,40 @@ class BridgeRouter(LocalChatDispatcher):
             logger.error("Cannot route Meshtastic message for unknown route %s.", route_id)
             self.runtime_state.increment("other_dropped")
             return
-        with self._lock:
-            loop = self._telegram_loop
-            bot = self._telegram_bot
-        if loop is None or loop.is_closed() or bot is None:
-            logger.error("Telegram event loop is unavailable; dropping Meshtastic message.")
-            self.runtime_state.increment("other_dropped")
-        else:
-            future = asyncio.run_coroutine_threadsafe(
-                forward_to_telegram(
-                    bot,
-                    message_text,
-                    binding.route.target_chat_id,
-                    binding.route.topic_id,
-                ),
-                loop,
-            )
+        if binding.route.telegram_enabled:
+            with self._lock:
+                loop = self._telegram_loop
+                bot = self._telegram_bot
+            if loop is None or loop.is_closed() or bot is None:
+                logger.error("Telegram event loop is unavailable; dropping Meshtastic message.")
+                self.runtime_state.increment("other_dropped")
+            else:
+                future = asyncio.run_coroutine_threadsafe(
+                    forward_to_telegram(
+                        bot,
+                        message_text,
+                        binding.route.target_chat_id,
+                        binding.route.topic_id,
+                    ),
+                    loop,
+                )
 
-            def record_result(completed) -> None:
-                try:
-                    completed.result()
-                    self.runtime_state.increment("mesh_to_telegram_success")
-                    self.runtime_state.mark_forwarded()
-                except Exception as exc:
-                    logger.exception("Failed to forward Meshtastic message to Telegram.")
-                    self.runtime_state.set_telegram("error", error=str(exc))
-                    self.runtime_state.increment("other_dropped")
+                def record_result(completed) -> None:
+                    try:
+                        completed.result()
+                        self.runtime_state.increment("mesh_to_telegram_success")
+                        self.runtime_state.mark_forwarded()
+                    except Exception as exc:
+                        logger.exception("Failed to forward Meshtastic message to Telegram.")
+                        self.runtime_state.set_telegram("error", error=str(exc))
+                        self.runtime_state.increment("other_dropped")
 
-            future.add_done_callback(record_result)
+                future.add_done_callback(record_result)
 
         channel_id = binding.route.discord_channel_id
         with self._lock:
             discord_sender = self._discord_sender
-        if channel_id is not None and discord_sender is not None:
+        if binding.route.discord_enabled and channel_id is not None and discord_sender is not None:
             try:
                 discord_future = discord_sender(channel_id, message_text)
 
@@ -253,7 +254,7 @@ class BridgeRouter(LocalChatDispatcher):
             channel_id = binding.route.discord_channel_id
             with self._lock:
                 discord_sender = self._discord_sender
-            if channel_id is not None and discord_sender is not None:
+            if binding.route.discord_enabled and channel_id is not None and discord_sender is not None:
                 try:
                     await asyncio.wrap_future(discord_sender(channel_id, formatted_text))
                     destinations.append("discord")
@@ -301,7 +302,12 @@ class BridgeRouter(LocalChatDispatcher):
         with self._lock:
             loop = self._telegram_loop
             bot = self._telegram_bot
-        if loop is not None and not loop.is_closed() and bot is not None:
+        if (
+            binding.route.telegram_enabled
+            and loop is not None
+            and not loop.is_closed()
+            and bot is not None
+        ):
             try:
                 telegram_future = asyncio.run_coroutine_threadsafe(
                     forward_to_telegram(

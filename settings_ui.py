@@ -201,7 +201,9 @@ def check_connections(
         config.mqtt.password,
         config.mqtt.channel_key.hex(),
     )
-    probes = [("Telegram", telegram_probe), ("MQTT", mqtt_probe)]
+    probes = [("MQTT", mqtt_probe)]
+    if config.telegram.enabled:
+        probes.insert(0, ("Telegram", telegram_probe))
     if config.discord.enabled:
         probes.append(("Discord", discord_probe))
     for service, probe in probes:
@@ -271,15 +273,28 @@ def flatten_config(data: dict[str, Any]) -> dict[str, str]:
         for key, default in (
             ("name", ""),
             ("enabled", True),
+            ("telegram_enabled", None),
+            ("discord_enabled", None),
             ("channel_name", ""),
             ("channel_key", ""),
             ("target_chat_id", ""),
             ("topic_id", ""),
             ("discord_channel_id", ""),
         ):
-            value = route.get(key, default)
+            if key == "telegram_enabled":
+                value = route.get(key, route.get("target_chat_id") not in (None, ""))
+            elif key == "discord_enabled":
+                value = route.get(
+                    key,
+                    bool(discord.get("enabled", False))
+                    and route.get("discord_channel_id") not in (None, ""),
+                )
+            else:
+                value = route.get(key, default)
             values[f"routes.{index}.{key}"] = (
-                str(value).lower() if key == "enabled" else str(value if value is not None else "")
+                str(value).lower()
+                if key in {"enabled", "telegram_enabled", "discord_enabled"}
+                else str(value if value is not None else "")
             )
     # Compatibility keys keep older callers and config files round-trippable.
     values["telegram.target_chat_id"] = values["routes.0.target_chat_id"]
@@ -364,6 +379,8 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
             {
                 "name": values[prefix + "name"].strip(),
                 "enabled": checked(prefix + "enabled", "true"),
+                "telegram_enabled": checked(prefix + "telegram_enabled", "true"),
+                "discord_enabled": checked(prefix + "discord_enabled", "false"),
                 "channel_name": values[prefix + "channel_name"].strip(),
                 "channel_key": values[prefix + "channel_key"].strip(),
                 "target_chat_id": values[prefix + "target_chat_id"].strip(),
@@ -375,6 +392,10 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
         )
     if routes:
         raw["routes"] = routes
+        raw["features"]["multi_route_enabled"] = len(routes) > 1
+        raw["discord"]["enabled"] = any(
+            route["enabled"] and route["discord_enabled"] for route in routes
+        )
     validated = AppConfig.from_dict(raw)
 
     # Store numeric fields as JSON numbers and normalized non-secret text values.
@@ -406,6 +427,8 @@ def build_config(values: dict[str, str]) -> dict[str, Any]:
             {
                 "name": route.name,
                 "enabled": route.enabled,
+                "telegram_enabled": route.telegram_enabled,
+                "discord_enabled": route.discord_enabled,
                 "channel_name": route.channel_name,
                 "channel_key": raw["routes"][index]["channel_key"],
                 "target_chat_id": route.target_chat_id,
@@ -542,9 +565,7 @@ class SettingsEditor(tk.Tk):
         feature_frame = ttk.LabelFrame(outer, text="功能設定", padding=10)
         feature_frame.grid(row=row, column=0, sticky="ew", pady=4)
         feature_options = (
-            ("discord.enabled", "啟用 Discord 橋接"),
             ("features.statistics_enabled", "啟用執行統計"),
-            ("features.multi_route_enabled", "啟用多頻道路由"),
             ("features.status_api.enabled", "啟用本機狀態 API"),
             ("features.tray.enabled", "啟用系統匣"),
             ("features.tray.show_console", "系統匣模式仍顯示主控台"),
@@ -583,7 +604,7 @@ class SettingsEditor(tk.Tk):
 
         route_frame = ttk.LabelFrame(
             outer,
-            text="多頻道路由（啟用多頻道路由後生效，最多 5 組）",
+            text="多頻道路由（勾選「啟用此路由」後生效，最多 5 組）",
             padding=8,
         )
         route_frame.grid(row=row, column=0, sticky="ew", pady=4)
@@ -611,18 +632,33 @@ class SettingsEditor(tk.Tk):
                 onvalue="true",
                 offvalue="false",
             ).grid(row=0, column=0, columnspan=2, sticky="w")
+            for destination_column, (key, label, default) in enumerate(
+                (
+                    ("telegram_enabled", "傳送至 Telegram", "true"),
+                    ("discord_enabled", "傳送至 Discord", "false"),
+                )
+            ):
+                path = f"routes.{index}.{key}"
+                self.variables[path] = tk.StringVar(value=default)
+                ttk.Checkbutton(
+                    page,
+                    text=label,
+                    variable=self.variables[path],
+                    onvalue="true",
+                    offvalue="false",
+                ).grid(row=1, column=destination_column, sticky="w")
             for field_row, (key, label, secret) in enumerate(route_fields, start=1):
                 path = f"routes.{index}.{key}"
                 self.variables[path] = tk.StringVar()
                 ttk.Label(page, text=label).grid(
-                    row=field_row, column=0, sticky="w", padx=(0, 10), pady=2
+                    row=field_row + 1, column=0, sticky="w", padx=(0, 10), pady=2
                 )
                 entry = ttk.Entry(
                     page,
                     textvariable=self.variables[path],
                     show="•" if secret else "",
                 )
-                entry.grid(row=field_row, column=1, sticky="ew", pady=2)
+                entry.grid(row=field_row + 1, column=1, sticky="ew", pady=2)
                 if secret:
                     self.secret_entries.append(entry)
         row += 1
