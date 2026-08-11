@@ -39,6 +39,7 @@ class RuntimeState:
         self._statistics_enabled = statistics_enabled
         self._secrets = tuple(secret for secret in secrets_to_redact if secret)
         self._started_at = time.time()
+        self._generation = time.monotonic_ns()
         self._heartbeat = self._started_at
         self._bridge = {
             "status": "stopped",
@@ -173,12 +174,19 @@ class RuntimeState:
             self._messages.append(message)
             return dict(message)
 
-    def messages_after(self, after_id: int = 0) -> dict[str, Any]:
+    def messages_after(
+        self,
+        after_id: int = 0,
+        generation: int | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
+            if generation is not None and generation != self._generation:
+                after_id = 0
             messages = [dict(message) for message in self._messages if message["id"] > after_id]
             latest_id = self._messages[-1]["id"] if self._messages else 0
             return {
                 "heartbeat": self._heartbeat,
+                "generation": self._generation,
                 "messages": messages,
                 "latest_id": latest_id,
             }
@@ -187,6 +195,7 @@ class RuntimeState:
         with self._lock:
             return {
                 "heartbeat": self._heartbeat,
+                "generation": self._generation,
                 "pid": os.getpid(),
                 "started_at": self._started_at,
                 "last_forwarded_at": self._last_forwarded_at,

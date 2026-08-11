@@ -137,6 +137,7 @@ class DiscordBridge:
             raise DiscordServiceError(f"Discord 訊息傳送失敗：{exc}") from exc
 
     def stop(self) -> None:
+        self._stopped.set()
         loop = self._loop
         if loop is not None and not loop.is_closed() and not self.client.is_closed():
             try:

@@ -159,6 +159,7 @@ class MeshBridgeWindow(ctk.CTk):
         self._route_vars: dict[str, Any] = {}
         self._settings_vars: dict[str, Any] = {}
         self._last_message_id = 0
+        self._chat_generation: int | None = None
         self._last_log_sequence = 0
         self._operation_running = False
         self._tested_config: str | None = None
@@ -651,7 +652,14 @@ class MeshBridgeWindow(ctk.CTk):
         self.after(200, self._poll_events)
 
     def _refresh_chat(self) -> None:
-        result = self.controller.messages_after(self._last_message_id)
+        result = self.controller.messages_after(
+            self._last_message_id,
+            self._chat_generation,
+        )
+        generation = result.get("generation")
+        if generation != self._chat_generation:
+            self._chat_generation = generation
+            self._last_message_id = 0
         messages = result.get("messages", [])
         if messages:
             self.chat_history.configure(state="normal")

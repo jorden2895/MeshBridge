@@ -67,6 +67,23 @@ class ChatRuntimeStateTests(unittest.TestCase):
 
         self.assertEqual(RuntimeState().messages_after()["messages"], [])
 
+    def test_new_runtime_generation_resets_message_cursor(self):
+        previous = RuntimeState()
+        generation = previous.messages_after()["generation"]
+        current = RuntimeState()
+        current.record_message(
+            route_id="route-1",
+            source="telegram",
+            sender="TG:1",
+            text="new runtime message",
+            destinations=(),
+        )
+
+        history = current.messages_after(50, generation)
+
+        self.assertEqual([item["id"] for item in history["messages"]], [1])
+        self.assertNotEqual(history["generation"], generation)
+
 
 class LocalChatDispatcherTests(unittest.TestCase):
     def setUp(self):

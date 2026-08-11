@@ -31,13 +31,39 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 class RedactingFormatter(logging.Formatter):
     def __init__(self, fmt: str, secrets: tuple[str, ...] = ()) -> None:
         super().__init__(fmt)
+        self._lock = threading.RLock()
         self.secrets = tuple(secret for secret in secrets if secret)
+
+    def update_secrets(self, secrets: tuple[str, ...]) -> None:
+        with self._lock:
+            self.secrets = tuple(secret for secret in secrets if secret)
 
     def format(self, record: logging.LogRecord) -> str:
         rendered = super().format(record)
-        for secret in self.secrets:
+        with self._lock:
+            secrets = self.secrets
+        for secret in secrets:
             rendered = rendered.replace(secret, "***")
         return rendered
+
+
+def config_secrets(config) -> tuple[str, ...]:
+    return (
+        config.telegram.bot_token,
+        config.discord.bot_token,
+        config.mqtt.password,
+        *(base64.b64encode(route.channel_key).decode("ascii") for route in config.routes),
+    )
+
+
+def update_logging_config(config) -> None:
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, config.logging_level))
+    secrets = config_secrets(config)
+    for handler in root_logger.handlers:
+        formatter = handler.formatter
+        if isinstance(formatter, RedactingFormatter):
+            formatter.update_secrets(secrets)
 
 
 def setup_logging(
@@ -107,14 +133,10 @@ def main(argv: list[str] | None = None) -> int:
 
     raw, load_error = controller.load()
     config = controller.config
-    secrets = () if config is None else (
-        config.telegram.bot_token,
-        config.discord.bot_token,
-        config.mqtt.password,
-        *(base64.b64encode(route.channel_key).decode("ascii") for route in config.routes),
-    )
+    secrets = () if config is None else config_secrets(config)
     memory_handler = InMemoryLogHandler()
     setup_logging(config.logging_level if config else "INFO", secrets=secrets, memory_handler=memory_handler)
+    controller.configure_logging_hook(update_logging_config)
     logger.info("正在啟動 MeshBridge v%s…", __version__)
     if config is not None:
         try:

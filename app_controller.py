@@ -33,10 +33,14 @@ class AppController:
         self.update_monitor: UpdateMonitor | None = None
         self._notify = lambda title, message: self.events.put(("notice", f"{title}：{message}"))
         self._exit_for_update = lambda: self.events.put(("exit_for_update", None))
+        self._logging_config = lambda config: None
 
     def configure_update_hooks(self, notify, exit_for_update) -> None:
         self._notify = notify
         self._exit_for_update = exit_for_update
+
+    def configure_logging_hook(self, update_logging) -> None:
+        self._logging_config = update_logging
 
     def _stop_updates(self) -> None:
         if self.update_monitor is not None:
@@ -84,10 +88,10 @@ class AppController:
     def snapshot(self) -> dict | None:
         return self.runtime.snapshot() if self.runtime is not None else None
 
-    def messages_after(self, after_id: int) -> dict:
+    def messages_after(self, after_id: int, generation: int | None = None) -> dict:
         if self.runtime is None:
-            return {"messages": [], "latest_id": after_id}
-        return self.runtime.messages_after(after_id)
+            return {"messages": [], "latest_id": after_id, "generation": generation}
+        return self.runtime.messages_after(after_id, generation)
 
     def send(self, payload: dict) -> dict:
         if self.runtime is None:
@@ -166,6 +170,7 @@ class AppController:
                 self.runtime.stop()
             self._stop_updates()
             try:
+                self._logging_config(new_config)
                 self._replace_runtime(new_config).start()
                 save_config_atomic(new_raw, self.config_path)
                 sync_autostart(new_config.features.autostart)
@@ -178,10 +183,17 @@ class AppController:
                 if self.runtime is not None:
                     self.runtime.stop()
                 if old_raw is not None and old_config is not None:
-                    save_config_atomic(old_raw, self.config_path)
-                    sync_autostart(old_config.features.autostart)
                     self.raw_config = old_raw
                     self.config = old_config
+                    self._logging_config(old_config)
+                    try:
+                        save_config_atomic(old_raw, self.config_path)
+                    except OSError:
+                        logger.exception("無法將舊設定寫回設定檔。")
+                    try:
+                        sync_autostart(old_config.features.autostart)
+                    except OSError:
+                        logger.exception("無法還原 Windows 開機自動啟動設定。")
                     self._replace_runtime(old_config)
                     if was_running:
                         self.runtime.start()

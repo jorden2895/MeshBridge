@@ -96,6 +96,10 @@ def save_config_atomic(data: dict[str, Any], path: Path) -> None:
 def migrate_v2_to_v3(raw: dict[str, Any]) -> dict[str, Any]:
     """Return a validated v3-shaped copy without mutating the source object."""
     migrated = copy.deepcopy(raw)
+    for section in ("telegram", "discord", "mqtt", "features"):
+        value = migrated.get(section)
+        if value is not None and not isinstance(value, dict):
+            raise ConfigError(f"「{section}」必須是 JSON 物件")
     telegram = migrated.setdefault("telegram", {})
     discord = migrated.setdefault("discord", {})
     mqtt = migrated.setdefault("mqtt", {})
@@ -155,6 +159,9 @@ def load_config_data(path: Path, *, migrate: bool = True) -> tuple[dict[str, Any
     if version == CURRENT_CONFIG_VERSION:
         AppConfig.from_dict(raw)
         return raw, False
+    if version != 2:
+        AppConfig.from_dict(raw)
+        raise ConfigError(f"不支援的設定檔版本：{version}")
     if not migrate:
         AppConfig.from_dict(raw)
         return raw, False

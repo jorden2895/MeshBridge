@@ -62,8 +62,12 @@ class BridgeRuntime:
     def snapshot(self) -> dict:
         return self.state.snapshot()
 
-    def messages_after(self, after_id: int = 0) -> dict:
-        return self.state.messages_after(after_id)
+    def messages_after(
+        self,
+        after_id: int = 0,
+        generation: int | None = None,
+    ) -> dict:
+        return self.state.messages_after(after_id, generation)
 
     def send(self, payload: dict) -> dict:
         router = self.router
@@ -112,6 +116,19 @@ class BridgeRuntime:
                 logger.exception("Telegram Bot 已停止。")
             finally:
                 self._notify()
+                if not self._stop_event.is_set():
+                    error = self._telegram_error or BridgeRuntimeError(
+                        "Telegram Bot 輪詢意外停止"
+                    )
+                    self._telegram_error = error
+                    self.state.set_telegram("error", error=str(error))
+                    self.state.set_bridge("error", str(error))
+                    self._notify()
+                    threading.Thread(
+                        target=self.stop,
+                        name="telegram-fatal-stop",
+                        daemon=True,
+                    ).start()
 
         self._telegram_thread = threading.Thread(
             target=run,
@@ -198,12 +215,12 @@ class BridgeRuntime:
                 self.config.bridge_ui.display_name,
             )
         try:
+            self._start_mqtt()
             if self.config.telegram.enabled:
                 self._start_telegram()
             else:
                 self.state.set_telegram("disabled")
             self._start_discord()
-            self._start_mqtt()
             with self._lock:
                 self._running = True
             self.state.set_bridge("running")
@@ -240,12 +257,16 @@ class BridgeRuntime:
             except Exception:
                 logger.exception("關閉 Discord Bot 時發生錯誤。")
             self.discord_service = None
+            self.state.set_discord("stopped")
         if self.telegram_app is not None:
             try:
                 self.telegram_app.bot_data["request_stop"]()
             except Exception:
                 logger.exception("要求 Telegram Bot 停止時發生錯誤。")
-            if self._telegram_thread is not None:
+            if (
+                self._telegram_thread is not None
+                and self._telegram_thread is not threading.current_thread()
+            ):
                 self._telegram_thread.join(timeout=15)
             self.telegram_app = None
             self._telegram_thread = None

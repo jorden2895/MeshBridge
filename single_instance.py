@@ -8,6 +8,7 @@ from collections.abc import Callable
 HOST = "127.0.0.1"
 PORT = 47833
 SIGNATURE = b"MeshBridge-v3\n"
+ACKNOWLEDGEMENT = b"MeshBridge-v3-ack\n"
 
 
 class SingleInstance:
@@ -27,10 +28,15 @@ class SingleInstance:
             listener.close()
             try:
                 with socket.create_connection((HOST, PORT), timeout=2) as client:
+                    client.settimeout(2)
                     client.sendall(SIGNATURE + secondary_command.encode("utf-8") + b"\n")
+                    if client.makefile("rb").readline() == ACKNOWLEDGEMENT:
+                        return False
             except OSError:
                 pass
-            return False
+            # The port belongs to an unrelated or unresponsive process. Continue
+            # without the activation listener instead of silently exiting.
+            return True
         listener.listen(2)
         listener.settimeout(0.5)
         self._socket = listener
@@ -52,6 +58,7 @@ class SingleInstance:
                     if payload.startswith(SIGNATURE):
                         command = payload[len(SIGNATURE):].decode("utf-8").strip()
                         self.on_command(command or "show:dashboard")
+                        client.sendall(ACKNOWLEDGEMENT)
                 except Exception:
                     continue
 
