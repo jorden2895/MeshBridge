@@ -6,7 +6,6 @@ $Dist = Join-Path $ProjectRoot "dist"
 $Work = Join-Path $ProjectRoot "build"
 $VersionSource = Join-Path $ProjectRoot "version.py"
 $BridgeVersionInfo = Join-Path $Work "bridge_version_info.txt"
-$SettingsVersionInfo = Join-Path $Work "settings_version_info.txt"
 
 if (-not (Test-Path -LiteralPath $Python)) {
     throw "Run setup_windows.bat before building a release."
@@ -46,8 +45,14 @@ VSVersionInfo(
 }
 
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
+New-Item -ItemType Directory -Force -Path $Dist | Out-Null
+foreach ($OldArtifact in @("MeshBridge.exe", "MeshBridgeSettings.exe")) {
+    $OldPath = Join-Path $Dist $OldArtifact
+    if (Test-Path -LiteralPath $OldPath) {
+        Remove-Item -LiteralPath $OldPath -Force
+    }
+}
 Write-VersionInfo $BridgeVersionInfo "MeshBridge" "MeshBridge" "MeshBridge.exe"
-Write-VersionInfo $SettingsVersionInfo "MeshBridge Settings" "MeshBridgeSettings" "MeshBridgeSettings.exe"
 
 & $Python -m pip install -r (Join-Path $ProjectRoot "requirements-build.txt")
 if ($LASTEXITCODE -ne 0) { throw "Failed to install PyInstaller." }
@@ -59,11 +64,4 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to install PyInstaller." }
     (Join-Path $ProjectRoot "main.py")
 if ($LASTEXITCODE -ne 0) { throw "Bridge executable build failed." }
 
-& $Python -m PyInstaller --noconfirm --clean --onefile --windowed `
-    --name MeshBridgeSettings `
-    --version-file $SettingsVersionInfo `
-    --distpath $Dist --workpath $Work `
-    (Join-Path $ProjectRoot "settings_ui.py")
-if ($LASTEXITCODE -ne 0) { throw "Settings executable build failed." }
-
-Write-Output "Release executables created in $Dist"
+Write-Output "Release executable created in $Dist"

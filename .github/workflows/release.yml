@@ -67,7 +67,6 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           $bridgeHash = (Get-FileHash -LiteralPath '.\dist\MeshBridge.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
-          $settingsHash = (Get-FileHash -LiteralPath '.\dist\MeshBridgeSettings.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           $generated = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" `
             -f "tag_name=$tag" `
             -f "target_commitish=$env:GITHUB_SHA" | ConvertFrom-Json
@@ -77,14 +76,11 @@ jobs:
           ## 下載
 
           - ``MeshBridge.exe``：執行橋接服務。
-          - ``MeshBridgeSettings.exe``：中文圖形化設定工具。
-
-          請將兩個檔案放在同一資料夾中使用。既有 ``config.json`` 可以繼續沿用，請勿公開或提交該設定檔。
+          ``MeshBridge.exe`` 同時提供橋接服務、設定、聊天、狀態與日誌介面。既有 v2 ``config.json`` 會在備份後自動升級；請勿公開或提交設定檔。
 
           ## SHA-256
 
           - ``MeshBridge.exe``：``$bridgeHash``
-          - ``MeshBridgeSettings.exe``：``$settingsHash``
           "@
           $notes | Set-Content -LiteralPath '.\release-notes.md' -Encoding utf8
 
@@ -102,7 +98,6 @@ jobs:
             }
             gh release upload $tag `
               '.\dist\MeshBridge.exe#MeshBridge.exe' `
-              '.\dist\MeshBridgeSettings.exe#MeshBridgeSettings.exe' `
               --clobber
             gh release edit $tag `
               --draft `
@@ -112,7 +107,6 @@ jobs:
           else {
             gh release create $tag `
               '.\dist\MeshBridge.exe#MeshBridge.exe' `
-              '.\dist\MeshBridgeSettings.exe#MeshBridgeSettings.exe' `
               --draft `
               --title "MeshBridge $tag" `
               --notes-file '.\release-notes.md'

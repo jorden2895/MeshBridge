@@ -1,29 +1,23 @@
 # MeshBridge entry point
 
 import argparse
-import ctypes
+import base64
 import logging
-import os
 import sys
 import threading
-from functools import partial
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from app_controller import AppController
 from app_paths import application_dir
-from bridge_router import BridgeRouter, RouteBinding
-from config import ConfigError, load_config
-from discord_bridge import DiscordBridge, DiscordServiceError
-from mqtt_service import MqttService, MqttServiceError
-from runtime_state import RuntimeState, StatusApiServer
-from telegram_bridge import create_application, start_bot
+from app_ui import MeshBridgeWindow
+from log_buffer import InMemoryLogHandler
+from single_instance import SingleInstance
 from tray_service import (
     TrayService,
-    minimize_console_close_to_tray,
     set_console_visible,
     sync_autostart,
 )
-from update_monitor import UpdateMonitor
 from version import __version__
 
 
@@ -46,21 +40,12 @@ class RedactingFormatter(logging.Formatter):
         return rendered
 
 
-def show_error_dialog(title: str, message: str) -> None:
-    if os.name == "nt":
-        ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
-
-
-def show_notification(title: str, message: str) -> None:
-    if os.name == "nt":
-        ctypes.windll.user32.MessageBoxW(None, message, title, 0x40)
-
-
 def setup_logging(
     level_name: str,
     log_directory: Path | None = None,
     *,
     secrets: tuple[str, ...] = (),
+    memory_handler: InMemoryLogHandler | None = None,
 ) -> Path | None:
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, level_name))
@@ -75,6 +60,9 @@ def setup_logging(
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
+    if memory_handler is not None:
+        memory_handler.setFormatter(formatter)
+        root_logger.addHandler(memory_handler)
 
     log_path = (log_directory or application_dir()) / LOG_FILENAME
     try:
@@ -97,6 +85,7 @@ def setup_logging(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MeshBridge")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -104,172 +93,84 @@ def main(argv: list[str] | None = None) -> int:
     actual_argv = sys.argv[1:] if argv is None else argv
     if "--version" in actual_argv:
         set_console_visible(True)
-    build_parser().parse_args(actual_argv)
-    status_server = None
-    tray_service = None
-    update_monitor = None
-    discord_service = None
-    headless_bindings: tuple[RouteBinding, ...] = ()
-    telegram_disabled = False
+    args = build_parser().parse_args(actual_argv)
+    set_console_visible(False)
+    controller = AppController(application_dir() / "config.json")
+
+    def activate(command: str) -> None:
+        page = "設定" if command == "show:settings" else "儀表板"
+        controller.events.put(("activate", page))
+
+    instance = SingleInstance(activate)
+    if not instance.acquire("show:dashboard"):
+        return 0
+
+    raw, load_error = controller.load()
+    config = controller.config
+    secrets = () if config is None else (
+        config.telegram.bot_token,
+        config.discord.bot_token,
+        config.mqtt.password,
+        *(base64.b64encode(route.channel_key).decode("ascii") for route in config.routes),
+    )
+    memory_handler = InMemoryLogHandler()
+    setup_logging(config.logging_level if config else "INFO", secrets=secrets, memory_handler=memory_handler)
+    logger.info("正在啟動 MeshBridge v%s…", __version__)
+    if config is not None:
+        try:
+            sync_autostart(config.features.autostart)
+        except OSError:
+            logger.exception("無法同步 Windows 開機自動啟動設定。")
+    tray_service: TrayService | None = None
+    shutting_down = threading.Event()
+
+    def exit_application() -> None:
+        if shutting_down.is_set():
+            return
+        shutting_down.set()
+
+        def worker() -> None:
+            controller.shutdown()
+            if tray_service is not None:
+                tray_service.stop()
+            instance.close()
+            controller.events.put(("shutdown_complete", None))
+
+        threading.Thread(target=worker, name="application-shutdown", daemon=True).start()
+
+    window = MeshBridgeWindow(
+        controller,
+        raw,
+        load_error,
+        memory_handler,
+        start_hidden=bool(args.autostart and raw is not None),
+        on_exit=exit_application,
+    )
+    tray_service = TrayService(
+        lambda: controller.events.put(("request_exit", None)),
+        show_callback=lambda: controller.events.put(("activate", "儀表板")),
+        settings_callback=lambda: controller.events.put(("activate", "設定")),
+        start_callback=controller.start_async,
+        stop_callback=controller.stop_async,
+        restart_callback=controller.restart_async,
+        status_callback=lambda: f"橋接服務：{'運行中' if controller.running else '已停止'}",
+        running_callback=lambda: controller.running,
+    )
+    tray_service.start()
+    controller.configure_update_hooks(
+        tray_service.notify,
+        lambda: controller.events.put(("request_exit", None)),
+    )
+    if raw is not None:
+        controller.start_async()
     try:
-        config = load_config(application_dir() / "config.json")
-        set_console_visible(
-            not config.features.tray.enabled or config.features.tray.show_console
-        )
-        secrets = (
-            config.telegram.bot_token,
-            config.discord.bot_token,
-            config.mqtt.password,
-            *(route.channel_key.hex() for route in config.routes),
-        )
-        setup_logging(config.logging_level, secrets=secrets)
-        logger.info("正在啟動 MeshBridge…")
-        logger.info("版本：%s", __version__)
-
-        runtime_state = RuntimeState(
-            statistics_enabled=config.features.statistics_enabled,
-            secrets_to_redact=secrets,
-        )
-        bindings = tuple(
-            RouteBinding(
-                route,
-                MqttService(
-                    config,
-                    route=route,
-                    runtime_state=runtime_state,
-                    route_id=f"route-{index}",
-                ),
-            )
-            for index, route in enumerate(config.active_routes, start=1)
-        )
-        stop_event = threading.Event()
-        if config.telegram.enabled:
-            telegram_app = create_application(
-                config.telegram.bot_token,
-                bindings,
-                runtime_state=runtime_state,
-                ui_display_name=config.bridge_ui.display_name,
-            )
-            request_stop = telegram_app.bot_data["request_stop"]
-            router = telegram_app.bot_data["router"]
-        else:
-            telegram_disabled = True
-            runtime_state.set_telegram("disabled")
-            request_stop = stop_event.set
-            router = BridgeRouter(bindings, runtime_state, config.bridge_ui.display_name)
-        if config.discord.enabled:
-            runtime_state.set_discord("starting")
-            channel_routes = {
-                route.discord_channel_id: binding.mqtt_service.route_id
-                for route, binding in zip(config.active_routes, bindings)
-                if route.discord_enabled and route.discord_channel_id is not None
-            }
-
-            def update_discord_status(
-                status: str,
-                bot_name: str | None,
-                error: str | None,
-            ) -> None:
-                runtime_state.set_discord(status, bot_name=bot_name, error=error)
-
-            discord_service = DiscordBridge(
-                config.discord.bot_token,
-                channel_routes,
-                router.forward_discord,
-                on_status=update_discord_status,
-            )
-            router.bind_discord(discord_service.schedule_text)
-            discord_service.start()
-        if telegram_disabled:
-            started: list[RouteBinding] = []
-
-            def fatal_mqtt(error: str) -> None:
-                logger.error("MQTT 發生致命錯誤：%s", error)
-                request_stop()
-
-            try:
-                for binding in bindings:
-                    binding.mqtt_service.set_telegram_callback(
-                        partial(router.forward_meshtastic, binding.mqtt_service.route_id)
-                    )
-                    binding.mqtt_service.set_fatal_callback(fatal_mqtt)
-                    binding.mqtt_service.start()
-                    started.append(binding)
-            except Exception:
-                for binding in reversed(started):
-                    binding.mqtt_service.stop()
-                raise
-            headless_bindings = tuple(started)
-        if config.features.status.enabled:
-            status_server = StatusApiServer(
-                runtime_state,
-                application_dir() / ".meshbridge-status.json",
-                send_callback=router,
-            )
-            status_server.start()
-        sync_autostart(config.features.tray.autostart)
-        if config.features.tray.enabled:
-            tray_service = TrayService(request_stop)
-            tray_service.start()
-            if config.features.tray.show_console:
-                minimize_console_close_to_tray()
-        if config.features.updates.enabled:
-            notifier = (
-                tray_service.notify if tray_service is not None else show_notification
-            )
-            update_monitor = UpdateMonitor(
-                current_version=__version__,
-                mode=config.features.updates.mode,
-                interval_hours=config.features.updates.interval_hours,
-                application_directory=application_dir(),
-                notify=notifier,
-                stop_application=request_stop,
-            )
-            update_monitor.start()
-        if config.telegram.enabled:
-            start_bot(telegram_app)
-        else:
-            logger.info("MeshBridge 已就緒，可以開始轉發訊息。")
-            while not stop_event.wait(1):
-                runtime_state.heartbeat()
-        return 0
-    except ConfigError as exc:
-        logger.error("設定錯誤：%s", exc)
-        logger.error("請使用 MeshBridgeSettings.exe 檢查並儲存設定。")
-        show_error_dialog(
-            "MeshBridge 設定錯誤",
-            f"{exc}\n\n請使用 MeshBridgeSettings.exe 檢查並儲存設定。",
-        )
-        return 2
-    except MqttServiceError as exc:
-        logger.error("MQTT 啟動失敗：%s", exc)
-        show_error_dialog("MeshBridge 啟動失敗", f"MQTT 啟動失敗：{exc}")
-        return 3
-    except DiscordServiceError as exc:
-        logger.error("Discord 啟動失敗：%s", exc)
-        show_error_dialog("MeshBridge 啟動失敗", f"Discord 啟動失敗：{exc}")
-        return 4
-    except KeyboardInterrupt:
-        logger.info("收到停止訊號，正在關閉程式。")
-        return 0
-    except Exception:
-        logger.exception("MeshBridge 因未預期的錯誤而停止。")
-        show_error_dialog(
-            "MeshBridge 已停止",
-            "程式發生未預期的錯誤。請開啟 MeshBridge.log 查看詳細資訊。",
-        )
-        return 1
+        window.mainloop()
     finally:
-        for binding in reversed(headless_bindings):
-            binding.mqtt_service.stop()
-        if discord_service is not None:
-            discord_service.stop()
-        if update_monitor is not None:
-            update_monitor.stop()
-        if tray_service is not None:
+        if not shutting_down.is_set():
+            controller.shutdown()
             tray_service.stop()
-        if status_server is not None:
-            status_server.stop()
+            instance.close()
+    return 0
 
 
 if __name__ == "__main__":

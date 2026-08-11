@@ -40,7 +40,7 @@ async def forward_to_telegram(
 
 
 class LocalChatDispatcher:
-    """Send UI chat commands from the local API thread to active routes."""
+    """Send in-process UI chat commands to active routes."""
 
     def __init__(
         self,
@@ -65,10 +65,6 @@ class LocalChatDispatcher:
         with self._lock:
             self._telegram_loop = None
             self._telegram_bot = None
-
-    # Compatibility aliases for the v1.5 dispatcher interface.
-    bind = bind_telegram
-    clear = clear_telegram
 
     def bind_discord(self, sender: Callable[[str, str], Future]) -> None:
         with self._lock:

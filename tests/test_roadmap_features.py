@@ -1,7 +1,6 @@
 import json
 import tempfile
 import unittest
-import main as main_module
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -9,8 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from config import AppConfig, ConfigError
 from main import RedactingFormatter
 from mqtt_service import MqttService, MqttServiceError
-from runtime_state import RuntimeState, StatusApiServer
-from status_client import StatusUnavailable, fetch_status
+from runtime_state import RuntimeState
 from telegram_bridge import RouteBinding, ThreadSafeApplicationStop, handle_message
 from update_service import ReleaseInfo, is_newer, record_check, should_check
 from update_monitor import UpdateMonitor
@@ -40,9 +38,7 @@ class ConfigurationRoadmapTests(unittest.TestCase):
         config = AppConfig.from_dict(valid_config())
         self.assertEqual(len(config.routes), 1)
         self.assertTrue(config.features.statistics_enabled)
-        self.assertTrue(config.features.status.enabled)
-        self.assertFalse(config.features.multi_route_enabled)
-        self.assertFalse(config.features.tray.enabled)
+        self.assertFalse(config.features.autostart)
         self.assertFalse(config.features.updates.enabled)
 
     def test_anonymous_mqtt_and_normalized_root_topic_are_allowed(self):
@@ -60,73 +56,17 @@ class ConfigurationRoadmapTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "wildcard"):
             AppConfig.from_dict(raw)
 
-    def test_routes_are_limited_to_five_and_one_to_one(self):
+    def test_routes_are_limited_to_twenty_and_one_to_one(self):
+        self.assertEqual(len(AppConfig.from_dict(multi_route_config(1)).active_routes), 1)
         self.assertEqual(len(AppConfig.from_dict(multi_route_config(5)).active_routes), 5)
-        with self.assertRaisesRegex(ConfigError, "1 到 5"):
-            AppConfig.from_dict(multi_route_config(6))
+        self.assertEqual(len(AppConfig.from_dict(multi_route_config(20)).active_routes), 20)
+        with self.assertRaisesRegex(ConfigError, "1 到 20"):
+            AppConfig.from_dict(multi_route_config(21))
         duplicate = multi_route_config(2)
         duplicate["routes"][1]["target_chat_id"] = duplicate["routes"][0]["target_chat_id"]
         duplicate["routes"][1]["topic_id"] = duplicate["routes"][0]["topic_id"]
         with self.assertRaisesRegex(ConfigError, "聊天室"):
             AppConfig.from_dict(duplicate)
-
-    def test_discord_only_main_does_not_create_telegram_application(self):
-        raw = valid_config()
-        raw["telegram"] = {"bot_token": "", "target_chat_id": None}
-        raw["discord"] = {"enabled": True, "bot_token": "discord-token"}
-        raw["features"] = {"status_api": {"enabled": False}}
-        raw["routes"] = [
-            {
-                "name": "Discord 路由",
-                "enabled": True,
-                "telegram_enabled": False,
-                "discord_enabled": True,
-                "channel_name": "Test",
-                "channel_key": "AQ==",
-                "discord_channel_id": "123456789012345678",
-            }
-        ]
-        config = AppConfig.from_dict(raw)
-
-        class FakeMqttService:
-            def __init__(self, *args, route_id, **kwargs):
-                self.route_id = route_id
-                self.fatal_callback = None
-                self.stopped = False
-
-            def set_telegram_callback(self, callback):
-                self.message_callback = callback
-
-            def set_fatal_callback(self, callback):
-                self.fatal_callback = callback
-
-            def start(self):
-                self.fatal_callback("test stop")
-
-            def stop(self):
-                self.stopped = True
-
-        discord_service = Mock()
-        discord_service.schedule_text = Mock()
-        with patch.object(main_module, "load_config", return_value=config), patch.object(
-            main_module, "MqttService", FakeMqttService
-        ), patch.object(
-            main_module, "DiscordBridge", return_value=discord_service
-        ), patch.object(
-            main_module, "create_application"
-        ) as create_application, patch.object(
-            main_module, "setup_logging"
-        ), patch.object(
-            main_module, "set_console_visible"
-        ), patch.object(
-            main_module, "sync_autostart"
-        ):
-            result = main_module.main([])
-
-        self.assertEqual(result, 0)
-        create_application.assert_not_called()
-        discord_service.start.assert_called_once()
-
 
 class RuntimeStatusTests(unittest.TestCase):
     def test_statistics_reset_and_errors_are_redacted(self):
@@ -141,21 +81,6 @@ class RuntimeStatusTests(unittest.TestCase):
             RuntimeState().snapshot()["statistics"]["duplicate_packets"],
             0,
         )
-
-    def test_local_status_api_requires_token_and_reports_staleness(self):
-        with tempfile.TemporaryDirectory() as directory:
-            discovery = Path(directory) / "status.json"
-            state = RuntimeState()
-            server = StatusApiServer(state, discovery)
-            server.start()
-            try:
-                self.assertEqual(fetch_status(discovery)["pid"], server.state.snapshot()["pid"])
-                state._heartbeat = 0
-                with self.assertRaises(StatusUnavailable):
-                    fetch_status(discovery)
-            finally:
-                server.stop()
-            self.assertFalse(discovery.exists())
 
     def test_log_formatter_redacts_known_secrets(self):
         import logging

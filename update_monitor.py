@@ -63,7 +63,7 @@ class UpdateMonitor:
             if self.mode == "notify":
                 self.notify(
                     "MeshBridge 更新",
-                    f"發現正式版本 {release.version}，請開啟設定工具查看。",
+                    f"發現正式版本 {release.version}，請前往設定頁查看。",
                 )
                 return
             files = download_portable_release(release, self.application_directory)
@@ -76,7 +76,7 @@ class UpdateMonitor:
             schedule_portable_install(files, self.application_directory)
             self.notify(
                 "MeshBridge 更新",
-                f"{release.version} 已下載，Bridge 將重新啟動以完成更新。",
+                f"{release.version} 已下載，橋接服務將重新啟動以完成更新。",
             )
             self.stop_application()
         except Exception:
