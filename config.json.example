@@ -25,6 +25,19 @@
     "bridge_ui": {
         "display_name": "Bridge UI"
     },
+    "routes": [
+        {
+            "name": "預設路由",
+            "enabled": true,
+            "telegram_enabled": true,
+            "discord_enabled": false,
+            "channel_name": "LongFast",
+            "channel_key": "1PG7OiApB1nwvP+rz05pAQ==",
+            "target_chat_id": "YOUR_TARGET_CHAT_ID_HERE",
+            "topic_id": null,
+            "discord_channel_id": null
+        }
+    ],
     "features": {
         "statistics_enabled": true,
         "multi_route_enabled": false,

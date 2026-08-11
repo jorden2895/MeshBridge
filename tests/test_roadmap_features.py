@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import main as main_module
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -68,6 +69,63 @@ class ConfigurationRoadmapTests(unittest.TestCase):
         duplicate["routes"][1]["topic_id"] = duplicate["routes"][0]["topic_id"]
         with self.assertRaisesRegex(ConfigError, "聊天室"):
             AppConfig.from_dict(duplicate)
+
+    def test_discord_only_main_does_not_create_telegram_application(self):
+        raw = valid_config()
+        raw["telegram"] = {"bot_token": "", "target_chat_id": None}
+        raw["discord"] = {"enabled": True, "bot_token": "discord-token"}
+        raw["features"] = {"status_api": {"enabled": False}}
+        raw["routes"] = [
+            {
+                "name": "Discord 路由",
+                "enabled": True,
+                "telegram_enabled": False,
+                "discord_enabled": True,
+                "channel_name": "Test",
+                "channel_key": "AQ==",
+                "discord_channel_id": "123456789012345678",
+            }
+        ]
+        config = AppConfig.from_dict(raw)
+
+        class FakeMqttService:
+            def __init__(self, *args, route_id, **kwargs):
+                self.route_id = route_id
+                self.fatal_callback = None
+                self.stopped = False
+
+            def set_telegram_callback(self, callback):
+                self.message_callback = callback
+
+            def set_fatal_callback(self, callback):
+                self.fatal_callback = callback
+
+            def start(self):
+                self.fatal_callback("test stop")
+
+            def stop(self):
+                self.stopped = True
+
+        discord_service = Mock()
+        discord_service.schedule_text = Mock()
+        with patch.object(main_module, "load_config", return_value=config), patch.object(
+            main_module, "MqttService", FakeMqttService
+        ), patch.object(
+            main_module, "DiscordBridge", return_value=discord_service
+        ), patch.object(
+            main_module, "create_application"
+        ) as create_application, patch.object(
+            main_module, "setup_logging"
+        ), patch.object(
+            main_module, "set_console_visible"
+        ), patch.object(
+            main_module, "sync_autostart"
+        ):
+            result = main_module.main([])
+
+        self.assertEqual(result, 0)
+        create_application.assert_not_called()
+        discord_service.start.assert_called_once()
 
 
 class RuntimeStatusTests(unittest.TestCase):

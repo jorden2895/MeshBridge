@@ -64,7 +64,10 @@ def is_authorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat = update.effective_chat
     if chat is None:
         return False
-    return any(binding.route.target_chat_id == chat.id for binding in _bindings(context))
+    return any(
+        binding.route.telegram_enabled and binding.route.target_chat_id == chat.id
+        for binding in _bindings(context)
+    )
 
 
 def _bindings(context: ContextTypes.DEFAULT_TYPE) -> tuple[RouteBinding, ...]:
@@ -89,6 +92,8 @@ def _select_binding(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Route
     thread_id = getattr(message, "message_thread_id", None)
     for binding in _bindings(context):
         route = binding.route
+        if not route.telegram_enabled:
+            continue
         if route.target_chat_id != chat.id:
             continue
         if route.topic_id is None and thread_id is None:
@@ -283,7 +288,11 @@ def create_application(
             .post_shutdown(post_shutdown)
             .build()
         )
-    application.bot_data["target_chat_id"] = bindings[0].route.target_chat_id
+    application.bot_data["target_chat_id"] = next(
+        binding.route.target_chat_id
+        for binding in bindings
+        if binding.route.telegram_enabled
+    )
     application.bot_data["mqtt_service"] = bindings[0].mqtt_service
     application.bot_data["route_bindings"] = bindings
     stop_request = ThreadSafeApplicationStop(application.stop_running)

@@ -3,7 +3,8 @@
 English | [繁體中文](README.zh-TW.md)
 
 MeshBridge forwards text between encrypted Meshtastic MQTT channels,
-authorized Telegram chats or topics, and optional Discord text channels.
+authorized Telegram chats or topics, and Discord text channels. Each route can
+use Telegram, Discord, or both independently.
 
 ## Features
 
@@ -35,8 +36,9 @@ authorized Telegram chats or topics, and optional Discord text channels.
    the [latest GitHub Release](https://github.com/jorden2895/MeshBridge/releases/latest).
 2. Put both files in the same folder.
 3. Open `MeshBridgeSettings.exe`.
-4. Enter the Telegram, MQTT, and virtual-node settings. To use Discord, enable
-   it and enter its bot token and a channel ID for each applicable route.
+4. Enter the MQTT and virtual-node settings, then select Telegram, Discord, or
+   both on each route. Only the selected platforms require a bot token and
+   destination ID.
 5. Select **測試連線** to check every enabled service. This
    does not start the bridge or send a message.
 6. Save the configuration and start `MeshBridge.exe`.
@@ -65,17 +67,20 @@ configuration files remain compatible. New settings include:
 - `node`: the virtual Meshtastic node ID, long name, and short name.
 - `bridge_ui.display_name`: the name shown in locally sent message prefixes and
   the chat monitor; defaults to `Bridge UI` for existing configurations.
-- `routes`: up to five mappings containing a Meshtastic channel/key, Telegram
-  chat/topic, and optional string-valued Discord channel ID.
-- `features`: statistics, local status API, multi-route, tray, and update options.
+- `routes`: up to five mappings containing a Meshtastic channel/key and per-route
+  `telegram_enabled` / `discord_enabled` destination switches. Each route must
+  enable at least one platform; only enabled platforms require destination IDs.
+- `features`: statistics, local status API, tray, and update options. The legacy
+  `multi_route_enabled` key remains accepted, but every individually enabled
+  route is now active.
 
 `mqtt.root_topic` is safely normalized, but MQTT wildcards `+` and `#` are
 rejected. MQTT credentials may both be blank for anonymous brokers. The node
 short name remains limited to four characters.
 
 The application validates all required values before opening a network
-connection. Enabling Discord requires a token and at least one enabled route
-with a Discord channel ID. A required service that fails during initial startup
+connection. A platform token is required only when at least one active route
+uses that platform. A required service that fails during initial startup
 causes the Bridge to show the reason and stop.
 
 ## Status, tray, and updates
@@ -128,8 +133,8 @@ Only one running program may poll a Telegram bot token at a time.
    not required.
 4. Enable Discord Developer Mode, right-click the destination text channel, and
    copy its channel ID.
-5. Enable Discord in the settings application, enter the token, and assign the
-   channel ID to the desired route.
+5. Enable Discord on the desired route, enter the token, and assign its channel
+   ID.
 
 Treat the bot token as a password and reset it immediately if exposed. Without
 Message Content Intent, the bot cannot read ordinary message text.
@@ -141,8 +146,8 @@ Requirements:
 - Python 3.10 or newer
 - Windows with the Python launcher (`py`)
 - An MQTT broker and Meshtastic channel
-- A Telegram bot token and target chat ID
-- Optional Discord bot token and text channel ID
+- A Telegram bot token and target chat ID when a route uses Telegram
+- A Discord bot token and text channel ID when a route uses Discord
 
 Double-click `setup_windows.bat` to create or repair `.venv` and install the
 pinned runtime dependencies. Do not copy `.venv` from another computer;

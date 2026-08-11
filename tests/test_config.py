@@ -125,6 +125,99 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "channel_key"):
             AppConfig.from_dict(raw)
 
+    def test_discord_only_route_does_not_require_telegram(self):
+        raw = valid_config()
+        raw["telegram"] = {"bot_token": "", "target_chat_id": None}
+        raw["discord"] = {"enabled": True, "bot_token": "discord-token"}
+        raw["routes"] = [
+            {
+                "name": "Discord 路由",
+                "enabled": True,
+                "channel_name": "Test",
+                "channel_key": "AQ==",
+                "telegram_enabled": False,
+                "discord_enabled": True,
+                "target_chat_id": None,
+                "discord_channel_id": "123456789012345678",
+            }
+        ]
+
+        config = AppConfig.from_dict(raw)
+
+        self.assertFalse(config.telegram.enabled)
+        self.assertTrue(config.discord.enabled)
+        self.assertIsNone(config.routes[0].target_chat_id)
+
+    def test_each_route_requires_at_least_one_destination(self):
+        raw = valid_config()
+        raw["routes"] = [
+            {
+                "name": "無目的地",
+                "enabled": True,
+                "channel_name": "Test",
+                "channel_key": "AQ==",
+                "telegram_enabled": False,
+                "discord_enabled": False,
+                "target_chat_id": None,
+                "discord_channel_id": None,
+            }
+        ]
+
+        with self.assertRaisesRegex(ConfigError, "至少必須啟用 Telegram 或 Discord"):
+            AppConfig.from_dict(raw)
+
+    def test_disabled_destination_does_not_require_its_id(self):
+        raw = valid_config()
+        raw["discord"] = {"enabled": False, "bot_token": ""}
+        raw["routes"] = [
+            {
+                "name": "Telegram 路由",
+                "enabled": True,
+                "channel_name": "Test",
+                "channel_key": "AQ==",
+                "telegram_enabled": True,
+                "discord_enabled": False,
+                "target_chat_id": -100123,
+                "discord_channel_id": None,
+            }
+        ]
+
+        config = AppConfig.from_dict(raw)
+
+        self.assertTrue(config.telegram.enabled)
+        self.assertFalse(config.discord.enabled)
+
+    def test_all_enabled_routes_are_active_without_legacy_master_switch(self):
+        raw = valid_config()
+        raw["discord"] = {"enabled": False, "bot_token": "discord-token"}
+        raw["features"] = {"multi_route_enabled": False}
+        raw["routes"] = [
+            {
+                "name": "主要路由",
+                "enabled": True,
+                "channel_name": "Primary",
+                "channel_key": "AQ==",
+                "telegram_enabled": True,
+                "discord_enabled": False,
+                "target_chat_id": -100123,
+            },
+            {
+                "name": "未生效 Discord 路由",
+                "enabled": True,
+                "channel_name": "Secondary",
+                "channel_key": "AQ==",
+                "telegram_enabled": False,
+                "discord_enabled": True,
+                "discord_channel_id": "123456789012345678",
+            },
+        ]
+
+        config = AppConfig.from_dict(raw)
+
+        self.assertTrue(config.telegram.enabled)
+        self.assertTrue(config.discord.enabled)
+        self.assertEqual(len(config.active_routes), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,8 @@
 [English](README.md) | 繁體中文
 
 MeshBridge 可在加密的 Meshtastic MQTT 頻道、經授權的 Telegram
-聊天室／主題與 Discord 文字頻道之間，雙向轉送文字訊息。Discord 為選用功能。
+聊天室／主題與 Discord 文字頻道之間，雙向轉送文字訊息。每條路由可個別選用
+Telegram、Discord 或同時使用兩者。
 
 ## 主要功能
 
@@ -30,8 +31,8 @@ MeshBridge 可在加密的 Meshtastic MQTT 頻道、經授權的 Telegram
    下載 `MeshBridge.exe` 與 `MeshBridgeSettings.exe`。
 2. 將兩個檔案放在同一個資料夾。
 3. 開啟 `MeshBridgeSettings.exe`。
-4. 填入 Telegram、MQTT 與虛擬節點設定；若需 Discord，再啟用 Discord 並填入
-   Bot Token 及各路由的頻道 ID，然後按下「驗證」。
+4. 填入 MQTT 與虛擬節點設定，並在每條路由勾選 Telegram、Discord 或兩者；
+   只需填入已選平台的 Bot Token 與目的地 ID，然後按下「驗證」。
 5. 按下「測試連線」檢查已啟用的服務。這項測試不會啟動
    Bridge，也不會傳送訊息。
 6. 儲存設定後，啟動 `MeshBridge.exe`。
@@ -51,21 +52,23 @@ Bot Token、MQTT 密碼與 Meshtastic 頻道金鑰，請勿公開、分享或提
 
 - `logging_level`：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL`。
 - `telegram`：Bot Token 與唯一獲准使用 Bridge 的聊天室 ID。
-- `discord`：是否啟用 Discord，以及 Discord Bot Token；預設關閉。
+- `discord`：Discord Bot Token；是否啟用會依各路由的選項自動決定。
 - `mqtt`：Broker 位址、連接埠、帳號、根主題、頻道名稱與頻道金鑰。
 - `node`：Meshtastic 虛擬節點 ID、完整名稱與簡短名稱。
 - `bridge_ui.display_name`：介面發送訊息的前綴與監看來源名稱；舊設定未提供時
   預設為 `Bridge UI`。
-- `routes`：最多五組；每組包含 Meshtastic 頻道與金鑰、Telegram 聊天室、
-  可選的 Telegram 主題 ID，以及可選的 Discord 頻道 ID。Discord ID 以字串保存。
-- `features`：狀態統計、本機狀態 API、多路由、系統匣及更新選項。
+- `routes`：最多五組；每組包含 Meshtastic 頻道與金鑰，並以
+  `telegram_enabled`、`discord_enabled` 個別選擇目的地。每組至少啟用一個平台；
+  只有啟用的平台需要填寫聊天室／頻道 ID。Discord ID 以字串保存。
+- `features`：狀態統計、本機狀態 API、系統匣及更新選項。舊版的
+  `multi_route_enabled` 會繼續接受，但所有勾選啟用的路由都會直接生效。
 
 `mqtt.root_topic` 會自動移除多餘的前後斜線並補上結尾斜線，但禁止 MQTT
 wildcard `+`、`#`。MQTT 帳號與密碼可同時留空以使用匿名 Broker。節點簡短
 名稱最多四個字元。
 
-程式會在建立網路連線前驗證所有必填設定。啟用 Discord 時必須提供 Bot Token，
-且至少一組啟用路由必須提供 Discord 頻道 ID。首次啟動的必要服務若無法連線，
+程式會在建立網路連線前驗證所有必填設定。只有至少一組路由啟用某平台時，
+才要求該平台的 Bot Token；每條路由至少必須啟用 Telegram 或 Discord。首次啟動的必要服務若無法連線，
 Bridge 會顯示原因並停止。
 
 ## 狀態、系統匣與更新
@@ -112,7 +115,7 @@ bytes 為上限。
    Administrator。
 4. 在 Discord **使用者設定 → 進階**啟用開發者模式，對文字頻道按右鍵並選擇
    **複製頻道 ID**。
-5. 在設定工具啟用 Discord、貼上 Token，並將頻道 ID 填入對應路由。
+5. 在對應路由勾選 Discord、貼上 Token，並填入該路由的頻道 ID。
 
 Bot Token 等同密碼，不可提交至 Git。若 Token 外洩，請立即在 Developer Portal
 重設。沒有啟用 Message Content Intent 時，Bot 無法取得一般訊息本文。
@@ -124,8 +127,8 @@ Bot Token 等同密碼，不可提交至 Git。若 Token 外洩，請立即在 D
 - Python 3.10 或更新版本
 - 已安裝 Python Launcher（`py`）的 Windows
 - MQTT Broker 與 Meshtastic 頻道
-- Telegram Bot Token 與目標聊天室 ID
-- 選用的 Discord Bot Token 與文字頻道 ID
+- 若路由使用 Telegram：Telegram Bot Token 與目標聊天室 ID
+- 若路由使用 Discord：Discord Bot Token 與文字頻道 ID
 
 雙擊 `setup_windows.bat`，程式會建立或修復 `.venv`，並安裝鎖定版本的執行
 依賴。請勿從其他電腦複製 `.venv`，因為虛擬環境包含該電腦的絕對路徑。

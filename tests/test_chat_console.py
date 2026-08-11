@@ -269,7 +269,12 @@ class BridgeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded["destinations"], ["meshtastic"])
 
     def test_meshtastic_still_reaches_discord_when_telegram_is_unavailable(self):
-        route = replace(self.binding.route, discord_channel_id="123456789012345678")
+        route = replace(
+            self.binding.route,
+            discord_channel_id="123456789012345678",
+            discord_enabled=True,
+            telegram_enabled=False,
+        )
         binding = RouteBinding(route, self.binding.mqtt_service)
         router = BridgeRouter((binding,), self.state)
         completed = Future()
@@ -284,9 +289,14 @@ class BridgeRouterTests(unittest.IsolatedAsyncioTestCase):
             self.state.snapshot()["statistics"]["mesh_to_discord_success"],
             1,
         )
+        self.assertEqual(self.state.snapshot()["statistics"]["other_dropped"], 0)
 
     async def test_telegram_fans_out_to_mesh_and_discord(self):
-        route = replace(self.binding.route, discord_channel_id="123456789012345678")
+        route = replace(
+            self.binding.route,
+            discord_channel_id="123456789012345678",
+            discord_enabled=True,
+        )
         binding = RouteBinding(route, self.binding.mqtt_service)
         router = BridgeRouter((binding,), self.state)
         completed = Future()

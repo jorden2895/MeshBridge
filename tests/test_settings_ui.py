@@ -85,6 +85,31 @@ class SettingsUiDataTests(unittest.TestCase):
             "123456789012345678",
         )
 
+    def test_per_route_destinations_round_trip(self):
+        raw = valid_config()
+        raw["telegram"] = {"bot_token": "", "target_chat_id": None}
+        raw["discord"] = {"enabled": True, "bot_token": "discord-token"}
+        raw["routes"] = [
+            {
+                "name": "Discord 路由",
+                "enabled": True,
+                "telegram_enabled": False,
+                "discord_enabled": True,
+                "channel_name": "Test",
+                "channel_key": "AQ==",
+                "target_chat_id": None,
+                "topic_id": None,
+                "discord_channel_id": "123456789012345678",
+            }
+        ]
+
+        result = build_config(flatten_config(raw))
+
+        self.assertFalse(result["routes"][0]["telegram_enabled"])
+        self.assertTrue(result["routes"][0]["discord_enabled"])
+        self.assertIsNone(result["routes"][0]["target_chat_id"])
+        self.assertTrue(result["discord"]["enabled"])
+
     def test_atomic_save_writes_valid_utf8_json(self):
         data = build_config(flatten_config(valid_config()))
         data["node"]["long_name"] = "台灣橋接器"
