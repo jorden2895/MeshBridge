@@ -1,6 +1,6 @@
 # MeshBridge
 
-MeshBridge is a portable Windows application that bridges plain-text messages among Meshtastic MQTT, Telegram, and Discord. Version 3 combines the bridge runtime, configuration, chat monitor, status dashboard, logs, updater, and system tray into one `MeshBridge.exe`.
+MeshBridge is a portable Windows application that bridges plain-text messages among Meshtastic MQTT, Telegram, and Discord. Version 3.1 adds source-local keyword replies, Ground Cow EEW forwarding, and Windows-local Cron schedules to the single `MeshBridge.exe`.
 
 [繁體中文說明](README.zh-TW.md)
 
@@ -18,6 +18,9 @@ MeshBridge is a portable Windows application that bridges plain-text messages am
 - Always-available system tray and optional Windows sign-in startup
 - Single-instance protection: starting the app again opens the existing window
 - Stable-release update checks with GitHub SHA-256 verification
+- Case-insensitive exact/contains keyword auto-replies to the original source
+- Ground Cow (地牛 Wake Up!) EEW forwarding to every enabled platform on selected routes
+- Standard five-field Cron messages using the Windows local timezone
 
 Messages larger than the 233-byte Meshtastic payload limit are dropped without sending a notification. Non-text Discord content is ignored. Message history and statistics exist only in memory and reset when the application exits.
 
@@ -43,9 +46,23 @@ Each route contains:
 - Optional Telegram chat/topic destination
 - Optional Discord channel destination
 
-## Upgrading from v2
+## Automation
 
-The first v3 launch creates `config.v2.backup.json`, migrates `config.json` to `config_version: 3`, and writes the result atomically. If migration fails, the original file remains unchanged and MeshBridge opens in setup mode without making network connections.
+The **Routes** page enables EEW independently for each route. The **Automation** page manages keyword rules and five-field Cron schedules; keyword routes are selected from a multi-select list. After editing, use **Save and apply** at the bottom of the Automation page. Automation text is limited to 233 UTF-8 bytes for reliable Meshtastic delivery. Missed schedules are not replayed.
+
+For Ground Cow v4.2.0, enable EEW on each intended MeshBridge route and select `MeshBridge.exe` as the linked program. The run-once option is optional. MeshBridge accepts Ground Cow's named `--local-intensity` and `--remaining-time` parameters. Use Ground Cow's built-in test sender to verify delivery. A compact legacy-compatible test is:
+
+```powershell
+.\MeshBridge.exe 5+ 20
+```
+
+For manual diagnostics, `.\MeshBridge.exe --eew 5+ 20` remains supported.
+
+This is intended for private/internal forwarding and is not an official public earthquake warning service.
+
+## Configuration upgrades
+
+Version 3.1 uses `config_version: 5`. EEW destinations from v4 are migrated to per-route switches. A previous configuration is backed up with its version number before migration, and writes remain atomic.
 
 Version 3 removes obsolete `multi_route_enabled`, `status_api`, `tray.enabled`, `tray.show_console`, global `discord.enabled`, and legacy single-route keys. `MeshBridgeSettings.exe` and `open_settings.bat` are no longer used.
 

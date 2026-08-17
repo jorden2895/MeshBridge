@@ -55,6 +55,10 @@ class LocalChatDispatcher:
         self._telegram_loop = None
         self._telegram_bot = None
         self._discord_sender: Callable[[str, str], Future] | None = None
+        self.automation = None
+
+    def bind_automation(self, automation) -> None:
+        self.automation = automation
 
     def bind_telegram(self, loop, bot: Bot) -> None:
         with self._lock:
@@ -163,6 +167,76 @@ class LocalChatDispatcher:
         )
         return {"sent": sent, "errors": errors}
 
+    def _send_binding_text(self, binding: RouteBinding, text: str, source: str) -> dict:
+        sent: list[str] = []
+        errors: dict[str, str] = {}
+        try:
+            if binding.mqtt_service.send_message(text):
+                sent.append("meshtastic")
+            else:
+                errors["meshtastic"] = "訊息超過 Meshtastic 長度限制"
+        except Exception:
+            logger.exception("Automation failed to send to Meshtastic.")
+            errors["meshtastic"] = "Meshtastic 傳送失敗"
+
+        if binding.route.telegram_enabled:
+            with self._lock:
+                loop = self._telegram_loop
+                bot = self._telegram_bot
+            if loop is None or loop.is_closed() or bot is None:
+                errors["telegram"] = "Telegram 尚未就緒"
+            else:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        forward_to_telegram(
+                            bot, text, binding.route.target_chat_id, binding.route.topic_id
+                        ),
+                        loop,
+                    ).result(timeout=15)
+                    sent.append("telegram")
+                except Exception:
+                    logger.exception("Automation failed to send to Telegram.")
+                    errors["telegram"] = "Telegram 傳送失敗"
+
+        if binding.route.discord_enabled and binding.route.discord_channel_id is not None:
+            with self._lock:
+                discord_sender = self._discord_sender
+            if discord_sender is None:
+                errors["discord"] = "Discord 尚未就緒"
+            else:
+                try:
+                    discord_sender(binding.route.discord_channel_id, text).result(timeout=15)
+                    sent.append("discord")
+                except Exception:
+                    logger.exception("Automation failed to send to Discord.")
+                    errors["discord"] = "Discord 傳送失敗"
+        if sent:
+            self.runtime_state.record_message(
+                route_id=binding.mqtt_service.route_id,
+                source=source,
+                sender="自動化",
+                text=text,
+                destinations=tuple(sent),
+            )
+        return {"sent": sent, "errors": errors}
+
+    def send_to_routes(self, route_names, text: str, *, source: str) -> dict:
+        wanted = {str(name).casefold() for name in route_names}
+        selected = [binding for binding in self.bindings.values() if binding.route.name.casefold() in wanted]
+        if not selected:
+            raise ChatApiError("找不到可用的自動化目標路由")
+        sent: list[str] = []
+        errors: dict[str, str] = {}
+        for binding in selected:
+            result = self._send_binding_text(binding, text, source)
+            sent.extend(f"{binding.route.name}/{target}" for target in result["sent"])
+            errors.update(
+                {f"{binding.route.name}/{target}": error for target, error in result["errors"].items()}
+            )
+        if not sent:
+            raise ChatApiError("；".join(errors.values()) or "自動化訊息無法傳送")
+        return {"sent": sent, "errors": errors}
+
 
 class BridgeRouter(LocalChatDispatcher):
     """Route text between platform adapters without owning their lifecycle."""
@@ -226,6 +300,22 @@ class BridgeRouter(LocalChatDispatcher):
                 self.runtime_state.set_discord("error", error=str(exc))
                 self.runtime_state.increment("other_dropped")
 
+        if self.automation is not None:
+            raw_text = message_text.partition("]: ")[2] or message_text
+            response = self.automation.keyword_response(binding.route.name, raw_text)
+            if response is not None:
+                try:
+                    if binding.mqtt_service.send_message(response):
+                        self.runtime_state.record_message(
+                            route_id=route_id,
+                            source="keyword",
+                            sender="自動回應",
+                            text=response,
+                            destinations=("meshtastic",),
+                        )
+                except Exception:
+                    logger.exception("Meshtastic keyword response failed.")
+
     async def forward_telegram(
         self,
         binding: RouteBinding,
@@ -261,6 +351,22 @@ class BridgeRouter(LocalChatDispatcher):
                     self.runtime_state.increment("other_dropped")
             if destinations:
                 self.runtime_state.mark_forwarded()
+            if self.automation is not None:
+                response = self.automation.keyword_response(binding.route.name, text)
+                if response is not None:
+                    with self._lock:
+                        bot = self._telegram_bot
+                    if bot is not None:
+                        await forward_to_telegram(
+                            bot, response, binding.route.target_chat_id, binding.route.topic_id
+                        )
+                        self.runtime_state.record_message(
+                            route_id=binding.mqtt_service.route_id,
+                            source="keyword",
+                            sender="自動回應",
+                            text=response,
+                            destinations=("telegram",),
+                        )
             if mqtt_error is not None:
                 raise mqtt_error
             return sent
@@ -322,6 +428,22 @@ class BridgeRouter(LocalChatDispatcher):
                 self.runtime_state.increment("other_dropped")
         if destinations:
             self.runtime_state.mark_forwarded()
+        if self.automation is not None:
+            response = self.automation.keyword_response(binding.route.name, text)
+            if response is not None:
+                with self._lock:
+                    discord_sender = self._discord_sender
+                if discord_sender is not None and binding.route.discord_channel_id is not None:
+                    await asyncio.wrap_future(
+                        discord_sender(binding.route.discord_channel_id, response)
+                    )
+                    self.runtime_state.record_message(
+                        route_id=route_id,
+                        source="keyword",
+                        sender="自動回應",
+                        text=response,
+                        destinations=("discord",),
+                    )
         self.runtime_state.record_message(
             route_id=route_id,
             source="discord",

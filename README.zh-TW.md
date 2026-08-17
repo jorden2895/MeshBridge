@@ -1,6 +1,6 @@
 # MeshBridge
 
-MeshBridge 是 Windows 可攜式文字訊息橋接工具，可在 Meshtastic MQTT、Telegram 與 Discord 之間轉送訊息。3.0 版將 Bridge、設定、聊天監看、狀態儀表板、日誌、更新與系統匣整合到同一個 `MeshBridge.exe`。
+MeshBridge 是 Windows 可攜式文字訊息橋接工具，可在 Meshtastic MQTT、Telegram 與 Discord 之間轉送訊息。3.1 版在單一 `MeshBridge.exe` 中加入關鍵字回應、地牛 EEW 轉送與 Cron 排程。
 
 [English README](README.md)
 
@@ -18,6 +18,9 @@ MeshBridge 是 Windows 可攜式文字訊息橋接工具，可在 Meshtastic MQT
 - 固定啟用系統匣，可選擇登入 Windows 後自動啟動
 - 單一實例：再次執行程式會喚醒既有視窗
 - 僅檢查正式 Release，下載時驗證 GitHub SHA-256
+- 關鍵字完全相符／包含比對，命中後只回覆原來源
+- 地牛 Wake Up! EEW 連動，可轉送到選定路由的全部平台
+- 跟隨 Windows 本機時區的五欄 Cron 排程訊息
 
 超過 Meshtastic 233 bytes 上限的訊息會直接丟棄，不另行通知。Discord 的圖片、附件及其他非文字內容會忽略。聊天紀錄與統計只保留在記憶體，關閉程式後歸零。
 
@@ -43,9 +46,36 @@ MeshBridge 是 Windows 可攜式文字訊息橋接工具，可在 Meshtastic MQT
 - 選用的 Telegram 聊天室／主題
 - 選用的 Discord 頻道
 
-## 從 v2 升級
+## 自動化
 
-v3 第一次讀取 v2 設定時，會先建立 `config.v2.backup.json`，再以原子寫入方式把 `config.json` 遷移到 `config_version: 3`。若遷移失敗，原始檔不會被修改，程式會進入設定引導模式且不建立網路連線。
+「自動化」頁可新增最多 50 條關鍵字規則與 50 項排程。自動化文字最多 233 UTF-8 bytes，以確保 Meshtastic、Telegram 與 Discord 都能使用。
+
+修改規則後，請按自動化頁底部的「儲存並套用」；完成重新啟動後，新規則立即生效。
+
+- 關鍵字支援「完全相符」與「包含」，忽略大小寫及前後空白；同一訊息只執行清單中第一條命中規則。
+- 每條關鍵字規則可從下拉核取清單選擇一個或多個適用路由，無須手動輸入路由名稱。
+- Cron 使用 `分鐘 小時 日期 月份 星期` 五欄格式，例如 `0 9 * * 1-5`；程式關閉、休眠或 Bridge 停止時錯過的排程不補送。
+- 排程與 EEW 會送到選定路由所有已啟用的平台。
+
+### 地牛 Wake Up! EEW
+
+1. 在 MeshBridge「路由」頁逐一開啟需要接收警報路由的「啟用 EEW 自動發訊」，儲存並套用。
+2. 在地牛 Wake Up! v4.2.0 的連動設定選擇同一支 `MeshBridge.exe`；「僅呼叫一次」可依需求選擇，並非必要條件。
+3. 使用地牛內建的測試發送功能確認所有目的地。
+
+地牛 v4.2.0 會傳入 `--local-intensity=5+`、`--remaining-time=20` 等具名參數，MeshBridge 會取用所在地震度與剩餘秒數。仍可用下列精簡格式手動診斷：
+
+```powershell
+.\MeshBridge.exe 5+ 20
+```
+
+手動診斷時仍可使用 `.\MeshBridge.exe --eew 5+ 20`。
+
+若 MeshBridge 尚未執行或 Bridge 已停止，會在背景啟動後發送。此功能定位為私人／內部防災轉送，不是官方地震發布服務，也不會推測震央、規模或報號。
+
+## 設定升級
+
+v3.1 使用 `config_version: 5`。舊 v4 的 EEW 目標會自動轉成各路由的開關；遷移前會依原版本建立備份，若遷移失敗則不修改原始檔。
 
 v3 移除已失效的 `multi_route_enabled`、`status_api`、`tray.enabled`、`tray.show_console`、全域 `discord.enabled` 與舊單一路由欄位。`MeshBridgeSettings.exe` 與 `open_settings.bat` 已不再使用。
 

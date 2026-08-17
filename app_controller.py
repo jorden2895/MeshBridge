@@ -34,6 +34,7 @@ class AppController:
         self._notify = lambda title, message: self.events.put(("notice", f"{title}：{message}"))
         self._exit_for_update = lambda: self.events.put(("exit_for_update", None))
         self._logging_config = lambda config: None
+        self._status_changed = lambda: None
 
     def configure_update_hooks(self, notify, exit_for_update) -> None:
         self._notify = notify
@@ -41,6 +42,15 @@ class AppController:
 
     def configure_logging_hook(self, update_logging) -> None:
         self._logging_config = update_logging
+
+    def configure_status_hook(self, status_changed) -> None:
+        self._status_changed = status_changed
+
+    def _emit_status_changed(self) -> None:
+        try:
+            self._status_changed()
+        except Exception:
+            logger.exception("Unable to refresh service status consumer.")
 
     def _stop_updates(self) -> None:
         if self.update_monitor is not None:
@@ -70,11 +80,12 @@ class AppController:
         self.raw_config = raw
         self.config = config
         if migrated:
-            self.events.put(("notice", "已備份並升級 v2 設定為 v3 格式。"))
+            self.events.put(("notice", "已備份並升級舊版設定為 v4 格式。"))
         return copy.deepcopy(raw), None
 
     def _runtime_listener(self, snapshot: dict) -> None:
         self.events.put(("runtime", snapshot))
+        self._emit_status_changed()
 
     def _replace_runtime(self, config: AppConfig) -> BridgeRuntime:
         runtime = BridgeRuntime(config, self._runtime_listener)
@@ -84,6 +95,26 @@ class AppController:
     @property
     def running(self) -> bool:
         return self.runtime is not None and self.runtime.running
+
+    @property
+    def operation_running(self) -> bool:
+        return self._operation_lock.locked()
+
+    @property
+    def service_status(self) -> str:
+        snapshot = self.snapshot()
+        if snapshot is None:
+            return "stopped"
+        return str(snapshot.get("bridge", {}).get("status", "stopped"))
+
+    def can_start(self) -> bool:
+        return not self.operation_running and self.service_status in {"stopped", "error"}
+
+    def can_stop(self) -> bool:
+        return not self.operation_running and self.service_status in {"starting", "running", "error"}
+
+    def can_restart(self) -> bool:
+        return not self.operation_running and self.service_status in {"running", "error"}
 
     def snapshot(self) -> dict | None:
         return self.runtime.snapshot() if self.runtime is not None else None
@@ -104,6 +135,7 @@ class AppController:
                 self.events.put(("notice", "另一項 Bridge 操作正在進行中。"))
                 return
             self.events.put(("operation", {"name": name, "running": True}))
+            self._emit_status_changed()
             try:
                 result = operation()
                 self.events.put(("operation", {"name": name, "running": False, "ok": True, "result": result}))
@@ -112,6 +144,7 @@ class AppController:
                 self.events.put(("operation", {"name": name, "running": False, "ok": False, "error": str(exc)}))
             finally:
                 self._operation_lock.release()
+                self._emit_status_changed()
 
         threading.Thread(target=worker, name=f"controller-{name}", daemon=True).start()
 
@@ -157,6 +190,28 @@ class AppController:
             return "目前已是最新正式版本"
 
         self._run_operation("check-update", check)
+
+    def send_eew_async(self, intensity: str, seconds: str | int) -> None:
+        def send_eew() -> str:
+            if self.config is None:
+                raise ConfigError("尚未完成設定，無法發送 EEW")
+            if self.runtime is None:
+                self._replace_runtime(self.config)
+            if not self.runtime.running:
+                self.runtime.start()
+                self._start_updates()
+            result = self.runtime.send_eew(intensity, seconds)
+            if result.get("duplicate"):
+                logger.info("已忽略短時間內重複的 EEW。")
+                return "已忽略短時間內重複的 EEW"
+            logger.info(
+                "EEW 已發送至 %s 個目的地；失敗 %s 個。",
+                len(result.get("sent", [])),
+                len(result.get("errors", {})),
+            )
+            return f"EEW 已發送至 {len(result.get('sent', []))} 個目的地"
+
+        self._run_operation("eew", send_eew)
 
     def apply_async(self, new_raw: dict[str, Any]) -> None:
         new_raw = copy.deepcopy(new_raw)

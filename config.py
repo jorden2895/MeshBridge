@@ -5,13 +5,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from croniter import croniter
+
 from meshtastic_codec import normalize_channel_key
 
 
 MAX_ROUTES = 20
-CURRENT_CONFIG_VERSION = 3
+CURRENT_CONFIG_VERSION = 5
 DEFAULT_UPDATE_INTERVAL_HOURS = 24
 DEFAULT_BRIDGE_UI_DISPLAY_NAME = "Bridge UI"
+MAX_AUTOMATION_ITEMS = 50
+MAX_AUTOMATION_MESSAGE_BYTES = 233
 
 
 class ConfigError(ValueError):
@@ -126,6 +130,7 @@ class RouteConfig:
     discord_channel_id: str | None = None
     telegram_enabled: bool = True
     discord_enabled: bool = False
+    eew_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,39 @@ class FeatureConfig:
 
 
 @dataclass(frozen=True)
+class KeywordRuleConfig:
+    name: str
+    enabled: bool
+    routes: tuple[str, ...]
+    match: str
+    keyword: str
+    response: str
+
+
+@dataclass(frozen=True)
+class EewConfig:
+    enabled: bool = False
+    routes: tuple[str, ...] = ()
+    dedupe_seconds: int = 60
+
+
+@dataclass(frozen=True)
+class ScheduleConfig:
+    name: str
+    enabled: bool
+    routes: tuple[str, ...]
+    cron: str
+    message: str
+
+
+@dataclass(frozen=True)
+class AutomationConfig:
+    keyword_rules: tuple[KeywordRuleConfig, ...] = ()
+    eew: EewConfig = EewConfig()
+    schedules: tuple[ScheduleConfig, ...] = ()
+
+
+@dataclass(frozen=True)
 class AppConfig:
     logging_level: str
     telegram: TelegramConfig
@@ -152,6 +190,7 @@ class AppConfig:
     bridge_ui: BridgeUiConfig
     routes: tuple[RouteConfig, ...]
     features: FeatureConfig
+    automations: AutomationConfig = AutomationConfig()
     config_version: int = CURRENT_CONFIG_VERSION
     appearance: AppearanceConfig = AppearanceConfig()
 
@@ -179,7 +218,7 @@ class AppConfig:
         appearance_raw = _object(raw, "appearance", required=False)
 
         config_version = _integer(raw.get("config_version", 2), "config_version")
-        if config_version not in {2, CURRENT_CONFIG_VERSION}:
+        if config_version not in {2, 3, 4, CURRENT_CONFIG_VERSION}:
             raise ConfigError(f"不支援的設定版本：{config_version}")
         theme = str(appearance_raw.get("theme", "system")).strip().lower()
         if theme not in {"system", "light", "dark"}:
@@ -316,6 +355,11 @@ class AppConfig:
                         discord_channel_id=discord_channel_id,
                         telegram_enabled=telegram_enabled,
                         discord_enabled=discord_route_enabled,
+                        eew_enabled=_bool(
+                            route_raw.get("eew_enabled"),
+                            f"{path}.eew_enabled",
+                            False,
+                        ),
                     )
                 )
             routes = tuple(parsed_routes)
@@ -396,6 +440,98 @@ class AppConfig:
             ),
         )
 
+        route_lookup = {route.name.casefold(): route.name for route in routes}
+
+        def automation_routes(value: Any, path: str) -> tuple[str, ...]:
+            if not isinstance(value, list) or not value:
+                raise ConfigError(f"「{path}」必須至少選擇一組路由")
+            selected: list[str] = []
+            seen: set[str] = set()
+            for item in value:
+                normalized = str(item).strip().casefold()
+                if normalized not in route_lookup:
+                    raise ConfigError(f"「{path}」包含不存在的路由：{item}")
+                if normalized not in seen:
+                    selected.append(route_lookup[normalized])
+                    seen.add(normalized)
+            return tuple(selected)
+
+        def automation_text(value: Any, path: str) -> str:
+            text = str(value or "").strip()
+            if not text:
+                raise ConfigError(f"「{path}」不可空白")
+            if len(text.encode("utf-8")) > MAX_AUTOMATION_MESSAGE_BYTES:
+                raise ConfigError(
+                    f"「{path}」不可超過 {MAX_AUTOMATION_MESSAGE_BYTES} UTF-8 bytes"
+                )
+            return text
+
+        automations_raw = _object(raw, "automations", required=False)
+        keyword_rules_raw = automations_raw.get("keyword_rules", [])
+        if not isinstance(keyword_rules_raw, list) or len(keyword_rules_raw) > MAX_AUTOMATION_ITEMS:
+            raise ConfigError(f"「automations.keyword_rules」最多只能有 {MAX_AUTOMATION_ITEMS} 項")
+        keyword_rules: list[KeywordRuleConfig] = []
+        for index, item in enumerate(keyword_rules_raw):
+            path = f"automations.keyword_rules[{index}]"
+            if not isinstance(item, dict):
+                raise ConfigError(f"「{path}」必須是 JSON 物件")
+            match = str(item.get("match", "exact")).strip().lower()
+            if match not in {"exact", "contains"}:
+                raise ConfigError(f"「{path}.match」必須是 exact 或 contains")
+            keyword = str(item.get("keyword", "")).strip()
+            if not keyword or len(keyword) > 100:
+                raise ConfigError(f"「{path}.keyword」必須包含 1 到 100 個字元")
+            keyword_rules.append(
+                KeywordRuleConfig(
+                    name=_required_text(item, "name", path),
+                    enabled=_bool(item.get("enabled"), f"{path}.enabled", True),
+                    routes=automation_routes(item.get("routes"), f"{path}.routes"),
+                    match=match,
+                    keyword=keyword,
+                    response=automation_text(item.get("response"), f"{path}.response"),
+                )
+            )
+
+        eew_raw = automations_raw.get("eew", {})
+        if not isinstance(eew_raw, dict):
+            raise ConfigError("「automations.eew」必須是 JSON 物件")
+        dedupe_seconds = _integer(eew_raw.get("dedupe_seconds", 60), "automations.eew.dedupe_seconds")
+        if not 0 <= dedupe_seconds <= 3600:
+            raise ConfigError("「automations.eew.dedupe_seconds」必須介於 0 到 3600")
+
+        schedules_raw = automations_raw.get("schedules", [])
+        if not isinstance(schedules_raw, list) or len(schedules_raw) > MAX_AUTOMATION_ITEMS:
+            raise ConfigError(f"「automations.schedules」最多只能有 {MAX_AUTOMATION_ITEMS} 項")
+        schedules: list[ScheduleConfig] = []
+        for index, item in enumerate(schedules_raw):
+            path = f"automations.schedules[{index}]"
+            if not isinstance(item, dict):
+                raise ConfigError(f"「{path}」必須是 JSON 物件")
+            expression = str(item.get("cron", "")).strip()
+            if len(expression.split()) != 5 or not croniter.is_valid(expression, strict=True):
+                raise ConfigError(f"「{path}.cron」必須是有效的五欄 Cron 表達式")
+            schedules.append(
+                ScheduleConfig(
+                    name=_required_text(item, "name", path),
+                    enabled=_bool(item.get("enabled"), f"{path}.enabled", True),
+                    routes=automation_routes(item.get("routes"), f"{path}.routes"),
+                    cron=expression,
+                    message=automation_text(item.get("message"), f"{path}.message"),
+                )
+            )
+
+        automations = AutomationConfig(
+            keyword_rules=tuple(keyword_rules),
+            eew=EewConfig(
+                enabled=any(route.enabled and route.eew_enabled for route in routes),
+                routes=tuple(
+                    route.name for route in routes if route.enabled and route.eew_enabled
+                ),
+                dedupe_seconds=dedupe_seconds,
+            ),
+            schedules=tuple(schedules),
+        )
+
         # Accessing active_routes here turns an all-disabled route set into a config error.
         config = cls(
             logging_level=logging_level,
@@ -428,6 +564,7 @@ class AppConfig:
             bridge_ui=BridgeUiConfig(display_name=display_name),
             routes=routes,
             features=features,
+            automations=automations,
             config_version=CURRENT_CONFIG_VERSION,
             appearance=AppearanceConfig(theme=theme),
         )

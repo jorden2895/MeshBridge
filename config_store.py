@@ -37,6 +37,7 @@ def default_config_data() -> dict[str, Any]:
                 "enabled": True,
                 "telegram_enabled": True,
                 "discord_enabled": False,
+                "eew_enabled": False,
                 "channel_name": "LongFast",
                 "channel_key": "AQ==",
                 "target_chat_id": None,
@@ -48,6 +49,11 @@ def default_config_data() -> dict[str, Any]:
             "statistics_enabled": True,
             "autostart": False,
             "updates": {"enabled": False, "mode": "notify", "interval_hours": 24},
+        },
+        "automations": {
+            "keyword_rules": [],
+            "eew": {"dedupe_seconds": 60},
+            "schedules": [],
         },
     }
 
@@ -145,6 +151,58 @@ def migrate_v2_to_v3(raw: dict[str, Any]) -> dict[str, Any]:
 
     migrated["routes"] = routes
     migrated["appearance"] = {"theme": "system"}
+    migrated["config_version"] = 3
+    AppConfig.from_dict(migrated)
+    return migrated
+
+
+def migrate_v3_to_v4(raw: dict[str, Any]) -> dict[str, Any]:
+    """Add disabled automation defaults without changing existing bridge behavior."""
+    migrated = copy.deepcopy(raw)
+    migrated.setdefault(
+        "automations",
+        {
+            "keyword_rules": [],
+            "eew": {"enabled": False, "routes": [], "dedupe_seconds": 60},
+            "schedules": [],
+        },
+    )
+    migrated["config_version"] = 4
+    AppConfig.from_dict(migrated)
+    return migrated
+
+
+def migrate_v4_to_v5(raw: dict[str, Any]) -> dict[str, Any]:
+    """Move EEW destinations onto individual routes."""
+    migrated = copy.deepcopy(raw)
+    automations = migrated.setdefault("automations", {})
+    eew = automations.get("eew", {})
+    if not isinstance(eew, dict):
+        raise ConfigError("「automations.eew」必須是 JSON 物件")
+    raw_routes = eew.get("routes", [])
+    if bool(eew.get("enabled", False)) and not isinstance(raw_routes, list):
+        raise ConfigError("「automations.eew.routes」必須是路由名稱陣列")
+    enabled_routes = (
+        {str(name).strip().casefold() for name in raw_routes}
+        if bool(eew.get("enabled", False)) and isinstance(raw_routes, list)
+        else set()
+    )
+    routes = migrated.get("routes", [])
+    if isinstance(routes, list):
+        known_routes = {
+            str(route.get("name", "")).strip().casefold()
+            for route in routes
+            if isinstance(route, dict)
+        }
+        unknown_routes = enabled_routes - known_routes
+        if unknown_routes:
+            raise ConfigError("「automations.eew.routes」包含不存在的路由")
+        for route in routes:
+            if isinstance(route, dict):
+                route["eew_enabled"] = (
+                    str(route.get("name", "")).strip().casefold() in enabled_routes
+                )
+    automations["eew"] = {"dedupe_seconds": eew.get("dedupe_seconds", 60)}
     migrated["config_version"] = CURRENT_CONFIG_VERSION
     AppConfig.from_dict(migrated)
     return migrated
@@ -159,15 +217,17 @@ def load_config_data(path: Path, *, migrate: bool = True) -> tuple[dict[str, Any
     if version == CURRENT_CONFIG_VERSION:
         AppConfig.from_dict(raw)
         return raw, False
-    if version != 2:
+    if version not in {2, 3, 4}:
         AppConfig.from_dict(raw)
         raise ConfigError(f"不支援的設定檔版本：{version}")
     if not migrate:
         AppConfig.from_dict(raw)
         return raw, False
 
-    migrated = migrate_v2_to_v3(raw)
-    backup = path.with_name("config.v2.backup.json")
+    migrated_v3 = migrate_v2_to_v3(raw) if version == 2 else copy.deepcopy(raw)
+    migrated_v4 = migrate_v3_to_v4(migrated_v3) if version in {2, 3} else migrated_v3
+    migrated = migrate_v4_to_v5(migrated_v4)
+    backup = path.with_name(f"config.v{version}.backup.json")
     if not backup.exists():
         save_config_atomic(raw, backup)
     save_config_atomic(migrated, path)
@@ -200,6 +260,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "enabled": route.enabled,
                 "telegram_enabled": route.telegram_enabled,
                 "discord_enabled": route.discord_enabled,
+                "eew_enabled": route.eew_enabled,
                 "channel_name": route.channel_name,
                 "channel_key": base64.b64encode(route.channel_key).decode("ascii"),
                 "target_chat_id": route.target_chat_id,
@@ -216,5 +277,31 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "mode": config.features.updates.mode,
                 "interval_hours": config.features.updates.interval_hours,
             },
+        },
+        "automations": {
+            "keyword_rules": [
+                {
+                    "name": rule.name,
+                    "enabled": rule.enabled,
+                    "routes": list(rule.routes),
+                    "match": rule.match,
+                    "keyword": rule.keyword,
+                    "response": rule.response,
+                }
+                for rule in config.automations.keyword_rules
+            ],
+            "eew": {
+                "dedupe_seconds": config.automations.eew.dedupe_seconds,
+            },
+            "schedules": [
+                {
+                    "name": schedule.name,
+                    "enabled": schedule.enabled,
+                    "routes": list(schedule.routes),
+                    "cron": schedule.cron,
+                    "message": schedule.message,
+                }
+                for schedule in config.automations.schedules
+            ],
         },
     }

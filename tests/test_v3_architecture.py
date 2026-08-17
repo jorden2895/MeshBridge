@@ -11,7 +11,7 @@ import bridge_runtime as runtime_module
 import single_instance as instance_module
 from app_controller import AppController
 from bridge_runtime import BridgeRuntime
-from config import AppConfig, ConfigError
+from config import AppConfig, ConfigError, CURRENT_CONFIG_VERSION
 from config_store import load_config_data, migrate_v2_to_v3
 from test_config import valid_config
 from update_service import ReleaseAsset, ReleaseInfo, UpdateError, download_portable_release
@@ -52,7 +52,8 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertFalse(changed_again)
         self.assertEqual(backup, original)
         self.assertEqual(migrated, loaded_again)
-        self.assertEqual(migrated["config_version"], 3)
+        self.assertEqual(migrated["config_version"], CURRENT_CONFIG_VERSION)
+        self.assertIn("automations", migrated)
         self.assertNotIn("status_api", migrated["features"])
         self.assertNotIn("enabled", migrated["discord"])
 
@@ -70,7 +71,7 @@ class ConfigMigrationTests(unittest.TestCase):
 
     def test_future_config_version_is_rejected_without_rewrite(self):
         original = v3_config()
-        original["config_version"] = 4
+        original["config_version"] = CURRENT_CONFIG_VERSION + 1
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             path.write_text(json.dumps(original), encoding="utf-8")
@@ -91,6 +92,41 @@ class ConfigMigrationTests(unittest.TestCase):
 
 
 class RuntimeLifecycleTests(unittest.TestCase):
+    def test_listener_observes_starting_running_stopping_and_stopped(self):
+        config = AppConfig.from_dict(v3_config())
+        mqtt = Mock()
+        mqtt.route_id = "route-1"
+        statuses = []
+        with patch.object(runtime_module, "MqttService", return_value=mqtt), patch.object(
+            BridgeRuntime, "_start_telegram"
+        ):
+            runtime = BridgeRuntime(
+                config,
+                lambda snapshot: statuses.append(snapshot["bridge"]["status"]),
+            )
+            runtime.start()
+            runtime.stop()
+
+        self.assertEqual(statuses[0], "starting")
+        self.assertIn("running", statuses)
+        self.assertIn("stopping", statuses)
+        self.assertEqual(statuses[-1], "stopped")
+
+    def test_failed_start_preserves_error_status_after_cleanup(self):
+        config = AppConfig.from_dict(v3_config())
+        mqtt = Mock()
+        mqtt.route_id = "route-1"
+        mqtt.start.side_effect = OSError("offline")
+        with patch.object(runtime_module, "MqttService", return_value=mqtt), patch.object(
+            BridgeRuntime, "_start_telegram"
+        ):
+            runtime = BridgeRuntime(config)
+            with self.assertRaises(Exception):
+                runtime.start()
+
+        self.assertFalse(runtime.running)
+        self.assertEqual(runtime.snapshot()["bridge"]["status"], "error")
+
     def test_discord_only_runtime_skips_telegram_and_cleans_up(self):
         config = AppConfig.from_dict(v3_config(telegram=False, discord=True))
         mqtt = Mock()
@@ -197,6 +233,31 @@ class RuntimeLifecycleTests(unittest.TestCase):
         self.assertEqual(runtime.snapshot()["discord"]["status"], "stopped")
 
 
+class ControllerStatusTests(unittest.TestCase):
+    def test_tray_and_ui_predicates_share_runtime_status(self):
+        controller = AppController(Path("config.json"))
+        runtime = Mock()
+        runtime.snapshot.return_value = {"bridge": {"status": "starting"}}
+        controller.runtime = runtime
+
+        self.assertEqual(controller.service_status, "starting")
+        self.assertFalse(controller.can_start())
+        self.assertTrue(controller.can_stop())
+        self.assertFalse(controller.can_restart())
+
+        runtime.snapshot.return_value = {"bridge": {"status": "error"}}
+        self.assertTrue(controller.can_start())
+        self.assertTrue(controller.can_stop())
+        self.assertTrue(controller.can_restart())
+
+    def test_runtime_notification_requests_tray_refresh(self):
+        controller = AppController(Path("config.json"))
+        refreshed = Mock()
+        controller.configure_status_hook(refreshed)
+        controller._runtime_listener({"bridge": {"status": "running"}})
+        refreshed.assert_called_once_with()
+
+
 class ControllerRollbackTests(unittest.TestCase):
     def test_failed_apply_restores_old_file_and_runtime(self):
         old_raw = v3_config()
@@ -207,6 +268,7 @@ class ControllerRollbackTests(unittest.TestCase):
             path.write_text(json.dumps(old_raw), encoding="utf-8")
             controller = AppController(path)
             controller.load()
+            old_raw = copy.deepcopy(controller.raw_config)
             old_runtime = Mock(running=True)
             controller.runtime = old_runtime
             failed_runtime = Mock()

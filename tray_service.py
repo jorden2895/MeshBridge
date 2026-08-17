@@ -67,7 +67,9 @@ class TrayService:
         stop_callback: Callable[[], None] | None = None,
         restart_callback: Callable[[], None] | None = None,
         status_callback: Callable[[], str] | None = None,
-        running_callback: Callable[[], bool] | None = None,
+        can_start_callback: Callable[[], bool] | None = None,
+        can_stop_callback: Callable[[], bool] | None = None,
+        can_restart_callback: Callable[[], bool] | None = None,
     ) -> None:
         self.exit_callback = exit_callback
         self.show_callback = show_callback or (lambda: None)
@@ -76,7 +78,9 @@ class TrayService:
         self.stop_callback = stop_callback or exit_callback
         self.restart_callback = restart_callback or (lambda: None)
         self.status_callback = status_callback or (lambda: "橋接服務：狀態未知")
-        self.running_callback = running_callback or (lambda: False)
+        self.can_start_callback = can_start_callback or (lambda: True)
+        self.can_stop_callback = can_stop_callback or (lambda: False)
+        self.can_restart_callback = can_restart_callback or (lambda: False)
         self._icon = None
 
     def start(self) -> None:
@@ -108,14 +112,18 @@ class TrayService:
                 pystray.MenuItem(
                     "啟動橋接服務",
                     invoke(self.start_callback),
-                    enabled=lambda item: not self.running_callback(),
+                    enabled=lambda item: self.can_start_callback(),
                 ),
                 pystray.MenuItem(
                     "停止橋接服務",
                     invoke(self.stop_callback),
-                    enabled=lambda item: self.running_callback(),
+                    enabled=lambda item: self.can_stop_callback(),
                 ),
-                pystray.MenuItem("重新啟動橋接服務", invoke(self.restart_callback)),
+                pystray.MenuItem(
+                    "重新啟動橋接服務",
+                    invoke(self.restart_callback),
+                    enabled=lambda item: self.can_restart_callback(),
+                ),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("結束", exit_bridge),
             ),
@@ -126,6 +134,14 @@ class TrayService:
         if self._icon is not None:
             self._icon.stop()
             self._icon = None
+
+    def refresh_menu(self) -> None:
+        icon = self._icon
+        if icon is not None:
+            try:
+                icon.update_menu()
+            except Exception:
+                logger.exception("Unable to refresh tray menu.")
 
     def notify(self, title: str, message: str) -> None:
         if self._icon is not None:

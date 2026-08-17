@@ -7,6 +7,7 @@ import time
 from functools import partial
 from typing import Callable
 
+from automation import AutomationEngine
 from bridge_router import BridgeRouter, RouteBinding
 from config import AppConfig
 from discord_bridge import DiscordBridge
@@ -31,6 +32,7 @@ class BridgeRuntime:
         self.listener = listener
         self.state = self._new_state(config)
         self.router: BridgeRouter | None = None
+        self.automation: AutomationEngine | None = None
         self.bindings: tuple[RouteBinding, ...] = ()
         self.discord_service: DiscordBridge | None = None
         self.telegram_app = None
@@ -74,6 +76,11 @@ class BridgeRuntime:
         if not self.running or router is None:
             raise BridgeRuntimeError("Bridge 尚未啟動")
         return router(payload)
+
+    def send_eew(self, intensity: str, seconds: str | int) -> dict:
+        if not self.running or self.automation is None:
+            raise BridgeRuntimeError("Bridge 尚未啟動")
+        return self.automation.send_eew(intensity, seconds)
 
     def _notify(self) -> None:
         if self.listener is not None:
@@ -197,6 +204,7 @@ class BridgeRuntime:
             self._telegram_error = None
             self.state = self._new_state(self.config)
             self.state.set_bridge("starting")
+            self._notify()
             self.bindings = tuple(
                 RouteBinding(
                     route,
@@ -214,6 +222,8 @@ class BridgeRuntime:
                 self.state,
                 self.config.bridge_ui.display_name,
             )
+            self.automation = AutomationEngine(self.config.automations, self.router)
+            self.router.bind_automation(self.automation)
         try:
             self._start_mqtt()
             if self.config.telegram.enabled:
@@ -224,6 +234,7 @@ class BridgeRuntime:
             with self._lock:
                 self._running = True
             self.state.set_bridge("running")
+            self.automation.start()
             self._heartbeat_thread = threading.Thread(
                 target=self._heartbeat,
                 name="bridge-heartbeat",
@@ -233,9 +244,9 @@ class BridgeRuntime:
             logger.info("MeshBridge 已就緒，可以開始轉發訊息。")
             self._notify()
         except Exception as exc:
+            self.stop()
             self.state.set_bridge("error", str(exc))
             self._notify()
-            self.stop()
             raise BridgeRuntimeError(str(exc)) from exc
 
     def stop(self) -> None:
@@ -249,6 +260,9 @@ class BridgeRuntime:
             self._running = False
             self._stop_event.set()
             self.state.set_bridge("stopping")
+        self._notify()
+        if self.automation is not None:
+            self.automation.stop()
         if self.discord_service is not None:
             if self.router is not None:
                 self.router.clear_discord()
@@ -280,6 +294,7 @@ class BridgeRuntime:
         self._heartbeat_thread = None
         self.bindings = ()
         self.router = None
+        self.automation = None
         self.state.set_bridge("stopped")
         self._notify()
 

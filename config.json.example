@@ -1,5 +1,5 @@
 {
-    "config_version": 3,
+    "config_version": 5,
     "logging_level": "INFO",
     "appearance": {
         "theme": "system"
@@ -31,6 +31,7 @@
             "enabled": true,
             "telegram_enabled": true,
             "discord_enabled": false,
+            "eew_enabled": false,
             "channel_name": "LongFast",
             "channel_key": "AQ==",
             "target_chat_id": "YOUR_TARGET_CHAT_ID_HERE",
@@ -38,6 +39,30 @@
             "discord_channel_id": null
         }
     ],
+    "automations": {
+        "keyword_rules": [
+            {
+                "name": "狀態查詢",
+                "enabled": false,
+                "routes": ["預設路由"],
+                "match": "exact",
+                "keyword": "狀態",
+                "response": "MeshBridge 正常運行中"
+            }
+        ],
+        "eew": {
+            "dedupe_seconds": 60
+        },
+        "schedules": [
+            {
+                "name": "平日早安",
+                "enabled": false,
+                "routes": ["預設路由"],
+                "cron": "0 9 * * 1-5",
+                "message": "早安，請確認今日通訊設備狀態。"
+            }
+        ]
+    },
     "features": {
         "statistics_enabled": true,
         "autostart": false,

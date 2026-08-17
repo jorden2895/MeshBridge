@@ -15,8 +15,9 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox
 
+from automation import AutomationEngine
 from app_controller import AppController
-from config import AppConfig, ConfigError, MAX_ROUTES
+from config import AppConfig, ConfigError, CURRENT_CONFIG_VERSION, MAX_ROUTES
 from config_store import default_config_data
 from connection_probes import check_connections
 from log_buffer import InMemoryLogHandler
@@ -82,8 +83,82 @@ TARGET_TO_API = {
     "Discord": "discord",
 }
 NAV_TEXT_COLOR = ("#111827", "#f9fafb")
-NAV_HOVER_COLOR = ("#d1d5db", "#374151")
-NAV_SELECTED_COLOR = ("#bfdbfe", "#1d4ed8")
+NAV_HOVER_COLOR = ("#e2e8f0", "#263244")
+NAV_SELECTED_COLOR = ("#dbeafe", "#1e40af")
+APP_BACKGROUND = ("#f4f7fb", "#0b1220")
+CARD_BACKGROUND = ("#ffffff", "#172033")
+BORDER_COLOR = ("#d7dee9", "#334155")
+MUTED_TEXT_COLOR = ("#5b6472", "#aab4c3")
+PRIMARY_COLOR = ("#2563eb", "#3b82f6")
+PRIMARY_HOVER_COLOR = ("#1d4ed8", "#2563eb")
+SECONDARY_COLOR = ("#e9eef5", "#273449")
+SECONDARY_HOVER_COLOR = ("#d7e0eb", "#34445c")
+SECONDARY_TEXT_COLOR = ("#172033", "#f8fafc")
+DANGER_COLOR = ("#dc2626", "#ef4444")
+DANGER_HOVER_COLOR = ("#b91c1c", "#dc2626")
+STATUS_COLORS = {
+    "running": ("#15803d", "#4ade80"),
+    "connected": ("#15803d", "#4ade80"),
+    "starting": ("#b45309", "#fbbf24"),
+    "connecting": ("#b45309", "#fbbf24"),
+    "reconnecting": ("#b45309", "#fbbf24"),
+    "stopping": ("#b45309", "#fbbf24"),
+    "error": ("#b91c1c", "#f87171"),
+    "stopped": MUTED_TEXT_COLOR,
+    "disabled": MUTED_TEXT_COLOR,
+}
+
+
+def apply_modern_theme() -> None:
+    theme = ctk.ThemeManager.theme
+    theme["CTk"]["fg_color"] = APP_BACKGROUND
+    theme["CTkToplevel"]["fg_color"] = APP_BACKGROUND
+    theme["CTkFrame"].update(corner_radius=12, fg_color=CARD_BACKGROUND, border_color=BORDER_COLOR)
+    theme["CTkButton"].update(
+        corner_radius=8,
+        fg_color=PRIMARY_COLOR,
+        hover_color=PRIMARY_HOVER_COLOR,
+        text_color=("#ffffff", "#ffffff"),
+    )
+    theme["CTkEntry"].update(
+        corner_radius=8,
+        border_width=1,
+        fg_color=CARD_BACKGROUND,
+        border_color=BORDER_COLOR,
+    )
+    theme["CTkTextbox"].update(
+        corner_radius=10,
+        border_width=1,
+        fg_color=CARD_BACKGROUND,
+        border_color=BORDER_COLOR,
+    )
+    theme["CTkOptionMenu"].update(
+        corner_radius=8,
+        fg_color=SECONDARY_COLOR,
+        button_color=("#dbe3ee", "#34445c"),
+        button_hover_color=SECONDARY_HOVER_COLOR,
+        text_color=SECONDARY_TEXT_COLOR,
+    )
+    theme["DropdownMenu"].update(
+        fg_color=CARD_BACKGROUND,
+        hover_color=SECONDARY_HOVER_COLOR,
+        text_color=SECONDARY_TEXT_COLOR,
+    )
+    theme["CTkScrollableFrame"]["label_fg_color"] = SECONDARY_COLOR
+
+
+def secondary_button_style() -> dict[str, object]:
+    return {
+        "fg_color": SECONDARY_COLOR,
+        "hover_color": SECONDARY_HOVER_COLOR,
+        "text_color": SECONDARY_TEXT_COLOR,
+        "border_color": BORDER_COLOR,
+        "border_width": 1,
+    }
+
+
+def danger_button_style() -> dict[str, object]:
+    return {"fg_color": DANGER_COLOR, "hover_color": DANGER_HOVER_COLOR, "text_color": "#ffffff"}
 
 
 def normalize_log_level(level: object) -> str:
@@ -141,6 +216,7 @@ class MeshBridgeWindow(ctk.CTk):
         theme = str(self.raw.get("appearance", {}).get("theme", "system"))
         ctk.set_appearance_mode(theme)
         ctk.set_default_color_theme("blue")
+        apply_modern_theme()
         ctk.ThemeManager.theme["CTkFont"]["family"] = DEFAULT_UI_FONT
         super().__init__()
         self.controller = controller
@@ -158,6 +234,8 @@ class MeshBridgeWindow(ctk.CTk):
         self._route_index = 0
         self._route_vars: dict[str, Any] = {}
         self._settings_vars: dict[str, Any] = {}
+        self._keyword_rows: list[dict[str, Any]] = []
+        self._schedule_rows: list[dict[str, Any]] = []
         self._last_message_id = 0
         self._chat_generation: int | None = None
         self._last_log_sequence = 0
@@ -180,7 +258,7 @@ class MeshBridgeWindow(ctk.CTk):
             self,
             width=190,
             corner_radius=0,
-            fg_color=("#e5e7eb", "#111827"),
+            fg_color=(("#e8edf4", "#111827")),
         )
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_rowconfigure(7, weight=1)
@@ -189,7 +267,7 @@ class MeshBridgeWindow(ctk.CTk):
             text="MeshBridge",
             font=ctk.CTkFont(size=22, weight="bold"),
         ).grid(row=0, column=0, padx=20, pady=(24, 22))
-        for row, name in enumerate(("儀表板", "聊天", "路由", "設定", "日誌"), start=1):
+        for row, name in enumerate(("儀表板", "聊天", "路由", "自動化", "設定", "日誌"), start=1):
             button = ctk.CTkButton(
                 sidebar,
                 text=name,
@@ -223,7 +301,7 @@ class MeshBridgeWindow(ctk.CTk):
             anchor="w", padx=24, pady=(22, 2)
         )
         if subtitle:
-            ctk.CTkLabel(page, text=subtitle, text_color=("#555", "#aaa")).pack(
+            ctk.CTkLabel(page, text=subtitle, text_color=MUTED_TEXT_COLOR).pack(
                 anchor="w", padx=24, pady=(0, 16)
             )
 
@@ -232,7 +310,7 @@ class MeshBridgeWindow(ctk.CTk):
         container.pack(side="left", fill="x", expand=True)
         entry = ctk.CTkEntry(container, textvariable=variable, show="•")
         entry.pack(side="left", fill="x", expand=True)
-        button = ctk.CTkButton(container, text="顯示", width=64)
+        button = ctk.CTkButton(container, text="顯示", width=64, **secondary_button_style())
 
         def toggle() -> None:
             hidden = bool(entry.cget("show"))
@@ -247,6 +325,7 @@ class MeshBridgeWindow(ctk.CTk):
         self._build_dashboard(self._page("儀表板"))
         self._build_chat(self._page("聊天"))
         self._build_routes(self._page("路由"))
+        self._build_automation(self._page("自動化"))
         self._build_settings(self._page("設定"))
         self._build_logs(self._page("日誌"))
 
@@ -288,9 +367,9 @@ class MeshBridgeWindow(ctk.CTk):
         controls.pack(fill="x", padx=24, pady=(0, 12))
         self.start_button = ctk.CTkButton(controls, text="啟動", command=self.controller.start_async)
         self.start_button.pack(side="left", padx=(0, 8))
-        self.stop_button = ctk.CTkButton(controls, text="停止", command=self.controller.stop_async)
+        self.stop_button = ctk.CTkButton(controls, text="停止", command=self.controller.stop_async, **secondary_button_style())
         self.stop_button.pack(side="left", padx=8)
-        self.restart_button = ctk.CTkButton(controls, text="重新啟動", command=self.controller.restart_async)
+        self.restart_button = ctk.CTkButton(controls, text="重新啟動", command=self.controller.restart_async, **secondary_button_style())
         self.restart_button.pack(side="left", padx=8)
         self.operation_label = ctk.CTkLabel(controls, text="")
         self.operation_label.pack(side="right")
@@ -379,7 +458,8 @@ class MeshBridgeWindow(ctk.CTk):
             ("新增", self._add_route), ("刪除", self._delete_route),
             ("上移", lambda: self._move_route(-1)), ("下移", lambda: self._move_route(1)),
         ):
-            ctk.CTkButton(route_controls, text=text, width=50, command=command).pack(
+            style = danger_button_style() if text == "刪除" else secondary_button_style()
+            ctk.CTkButton(route_controls, text=text, width=50, command=command, **style).pack(
                 side="left", padx=2, expand=True
             )
         editor = ctk.CTkScrollableFrame(body, label_text="路由內容")
@@ -388,12 +468,26 @@ class MeshBridgeWindow(ctk.CTk):
             "enabled": tk.BooleanVar(),
             "telegram_enabled": tk.BooleanVar(),
             "discord_enabled": tk.BooleanVar(),
+            "eew_enabled": tk.BooleanVar(),
         }
         ctk.CTkSwitch(editor, text="啟用此路由", variable=self._route_vars["enabled"]).pack(anchor="w", padx=12, pady=5)
         platform = ctk.CTkFrame(editor, fg_color="transparent")
         platform.pack(fill="x", padx=8)
         ctk.CTkSwitch(platform, text="Telegram", variable=self._route_vars["telegram_enabled"]).pack(side="left", padx=4)
         ctk.CTkSwitch(platform, text="Discord", variable=self._route_vars["discord_enabled"]).pack(side="left", padx=12)
+        eew_row = ctk.CTkFrame(editor, fg_color="transparent")
+        eew_row.pack(fill="x", padx=8, pady=(8, 2))
+        ctk.CTkSwitch(
+            eew_row,
+            text="啟用 EEW 自動發訊",
+            variable=self._route_vars["eew_enabled"],
+        ).pack(side="left", padx=4)
+        ctk.CTkLabel(
+            editor,
+            text="收到地牛速報後會傳送到此路由的所有已啟用平台；請使用地牛 Wake Up! 的測試發送功能驗證。",
+            text_color=MUTED_TEXT_COLOR,
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", padx=12, pady=(0, 4))
         for key, label, secret, help_text in (
             ("name", "路由名稱", False, "用來在儀表板與聊天頁辨識這條路由。"),
             ("channel_name", "Meshtastic 頻道名稱（Channel name）", False, "必須與 Meshtastic 裝置使用的頻道名稱相同。"),
@@ -406,7 +500,7 @@ class MeshBridgeWindow(ctk.CTk):
             ctk.CTkLabel(
                 editor,
                 text=help_text,
-                text_color=("#555", "#aaa"),
+                text_color=MUTED_TEXT_COLOR,
                 font=ctk.CTkFont(size=12),
             ).pack(anchor="w", padx=12, pady=(0, 3))
             variable = tk.StringVar()
@@ -417,7 +511,13 @@ class MeshBridgeWindow(ctk.CTk):
                 self._secret_entry(secret_row, variable)
             else:
                 ctk.CTkEntry(editor, textvariable=variable).pack(fill="x", padx=12)
-        ctk.CTkButton(editor, text="更新目前路由", command=self._commit_route).pack(
+        ctk.CTkLabel(
+            editor,
+            text="儲存後會套用全部設定，並安全重新啟動橋接服務。",
+            text_color=MUTED_TEXT_COLOR,
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="e", padx=12, pady=(12, 2))
+        ctk.CTkButton(editor, text="儲存並套用", command=self._apply_settings).pack(
             anchor="e", padx=12, pady=18
         )
         self._rebuild_route_list()
@@ -456,7 +556,7 @@ class MeshBridgeWindow(ctk.CTk):
                 ctk.CTkLabel(
                     groups[name],
                     text=group_descriptions[name],
-                    text_color=("#555", "#aaa"),
+                    text_color=MUTED_TEXT_COLOR,
                 ).pack(anchor="w", padx=12, pady=(0, 6))
             return groups[name]
 
@@ -492,7 +592,7 @@ class MeshBridgeWindow(ctk.CTk):
         ctk.CTkLabel(
             preferences,
             text="選擇外觀、開機啟動與自動更新行為。",
-            text_color=("#555", "#aaa"),
+            text_color=MUTED_TEXT_COLOR,
         ).pack(anchor="w", padx=12, pady=(0, 6))
         self.theme_var = tk.StringVar(value=THEME_TO_UI.get(self.raw.get("appearance", {}).get("theme", "system"), "系統"))
         theme_row = ctk.CTkFrame(preferences, fg_color="transparent")
@@ -532,10 +632,204 @@ class MeshBridgeWindow(ctk.CTk):
         self.settings_status.pack(side="left")
         self.apply_button = ctk.CTkButton(actions, text="儲存並套用", command=self._apply_settings)
         self.apply_button.pack(side="right", padx=5)
-        self.test_button = ctk.CTkButton(actions, text="測試連線", command=self._test_connections)
+        self.test_button = ctk.CTkButton(actions, text="測試連線", command=self._test_connections, **secondary_button_style())
         self.test_button.pack(side="right", padx=5)
-        self.validate_button = ctk.CTkButton(actions, text="檢查設定", command=self._validate_form)
+        self.validate_button = ctk.CTkButton(actions, text="檢查設定", command=self._validate_form, **secondary_button_style())
         self.validate_button.pack(side="right", padx=5)
+
+    @staticmethod
+    def _automation_routes(value: object) -> str:
+        return "、".join(str(item) for item in value) if isinstance(value, list) else ""
+
+    @staticmethod
+    def _parse_route_names(value: str) -> list[str]:
+        normalized = value.replace("，", ",").replace("、", ",")
+        return [item.strip() for item in normalized.split(",") if item.strip()]
+
+    def _labeled_entry(self, parent, label: str, variable: tk.StringVar) -> None:
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=10, pady=3)
+        ctk.CTkLabel(row, text=label, width=110, anchor="w").pack(side="left")
+        ctk.CTkEntry(row, textvariable=variable).pack(side="left", fill="x", expand=True)
+
+    def _build_automation(self, page: ctk.CTkFrame) -> None:
+        self._title(page, "自動化", "關鍵字回應與 Windows 本機時區 Cron 排程")
+        scroll = ctk.CTkScrollableFrame(page)
+        scroll.pack(fill="both", expand=True, padx=24, pady=(0, 12))
+        automations = self.raw.setdefault("automations", default_config_data()["automations"])
+        keyword = ctk.CTkFrame(scroll)
+        keyword.pack(fill="x", padx=6, pady=7)
+        ctk.CTkLabel(keyword, text="關鍵字自動回應", font=ctk.CTkFont(size=17, weight="bold")).pack(anchor="w", padx=12, pady=(10, 2))
+        ctk.CTkLabel(keyword, text="同時命中只執行第一條；適用路由可從下拉清單複選。", text_color=MUTED_TEXT_COLOR).pack(anchor="w", padx=12, pady=(0, 6))
+        self.keyword_container = ctk.CTkFrame(keyword, fg_color="transparent")
+        self.keyword_container.pack(fill="x")
+        for item in automations.get("keyword_rules", []):
+            self._add_keyword_rule(item)
+        ctk.CTkButton(keyword, text="新增關鍵字規則", command=self._add_keyword_rule).pack(anchor="e", padx=12, pady=10)
+
+        schedule = ctk.CTkFrame(scroll)
+        schedule.pack(fill="x", padx=6, pady=7)
+        ctk.CTkLabel(schedule, text="Cron 排程訊息", font=ctk.CTkFont(size=17, weight="bold")).pack(anchor="w", padx=12, pady=(10, 2))
+        ctk.CTkLabel(schedule, text="五欄：分鐘 小時 日期 月份 星期；例如 0 9 * * 1-5。錯過時段不補送。", text_color=MUTED_TEXT_COLOR).pack(anchor="w", padx=12, pady=(0, 6))
+        self.schedule_container = ctk.CTkFrame(schedule, fg_color="transparent")
+        self.schedule_container.pack(fill="x")
+        for item in automations.get("schedules", []):
+            self._add_schedule(item)
+        ctk.CTkButton(schedule, text="新增排程", command=self._add_schedule).pack(anchor="e", padx=12, pady=10)
+
+        actions = ctk.CTkFrame(page, fg_color="transparent")
+        actions.pack(fill="x", padx=24, pady=(0, 18))
+        self.automation_status = ctk.CTkLabel(
+            actions,
+            text="修改後請儲存並套用，完成後自動化規則才會生效。",
+            text_color=MUTED_TEXT_COLOR,
+        )
+        self.automation_status.pack(side="left")
+        self.automation_apply_button = ctk.CTkButton(
+            actions,
+            text="儲存並套用",
+            command=self._apply_settings,
+        )
+        self.automation_apply_button.pack(side="right")
+
+    def _add_keyword_rule(self, initial: dict[str, Any] | None = None) -> None:
+        default_route = next(
+            (route.get("name", "") for route in self._routes() if route.get("enabled", True)),
+            self._routes()[0].get("name", "") if self._routes() else "",
+        )
+        item = initial or {"name": f"規則 {len(self._keyword_rows) + 1}", "enabled": True, "routes": [default_route] if default_route else [], "match": "exact", "keyword": "", "response": ""}
+        card = ctk.CTkFrame(self.keyword_container)
+        card.pack(fill="x", padx=10, pady=5)
+        row: dict[str, Any] = {
+            "frame": card,
+            "enabled": tk.BooleanVar(value=bool(item.get("enabled", True))),
+            "name": tk.StringVar(value=str(item.get("name", ""))),
+            "routes": tk.StringVar(value=self._automation_routes(item.get("routes", []))),
+            "match": tk.StringVar(value="完全相符" if item.get("match", "exact") == "exact" else "包含"),
+            "keyword": tk.StringVar(value=str(item.get("keyword", ""))),
+            "response": tk.StringVar(value=str(item.get("response", ""))),
+        }
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=10, pady=(7, 2))
+        ctk.CTkSwitch(top, text="啟用", variable=row["enabled"]).pack(side="left")
+        ctk.CTkEntry(top, textvariable=row["name"], width=180).pack(side="left", padx=8)
+        ctk.CTkOptionMenu(top, variable=row["match"], values=["完全相符", "包含"], width=110).pack(side="left")
+        ctk.CTkButton(top, text="刪除", width=65, command=lambda: self._delete_automation_row(self._keyword_rows, row), **danger_button_style()).pack(side="right")
+        route_line = ctk.CTkFrame(card, fg_color="transparent")
+        route_line.pack(fill="x", padx=10, pady=3)
+        ctk.CTkLabel(route_line, text="適用路由", width=110, anchor="w").pack(side="left")
+        row["route_button"] = ctk.CTkButton(
+            route_line,
+            text="",
+            anchor="w",
+            command=lambda: self._choose_keyword_routes(row),
+            **secondary_button_style(),
+        )
+        row["route_button"].pack(side="left", fill="x", expand=True)
+        row["routes"].trace_add("write", lambda *_args: self._update_keyword_route_summary(row))
+        self._update_keyword_route_summary(row)
+        for label, key in (("關鍵字", "keyword"), ("回應文字", "response")):
+            self._labeled_entry(card, label, row[key])
+        self._keyword_rows.append(row)
+
+    def _update_keyword_route_summary(self, row: dict[str, Any]) -> None:
+        selected = self._parse_route_names(row["routes"].get())
+        if not selected:
+            text = "未選擇路由 ▼"
+        elif len(selected) == 1:
+            text = f"{selected[0]} ▼"
+        else:
+            text = f"已選 {len(selected)} 個路由 ▼"
+        row["route_button"].configure(text=text)
+
+    def _choose_keyword_routes(self, row: dict[str, Any]) -> None:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("選擇適用路由")
+        dialog.geometry("420x460")
+        dialog.minsize(360, 320)
+        dialog.transient(self)
+        dialog.configure(fg_color=APP_BACKGROUND)
+        ctk.CTkLabel(dialog, text="選擇適用路由", font=ctk.CTkFont(size=20, weight="bold")).pack(anchor="w", padx=20, pady=(18, 2))
+        ctk.CTkLabel(dialog, text="可同時選擇多條路由，只有按下套用才會儲存變更。", text_color=MUTED_TEXT_COLOR).pack(anchor="w", padx=20, pady=(0, 12))
+        choices = ctk.CTkScrollableFrame(dialog, fg_color=CARD_BACKGROUND, border_width=1, border_color=BORDER_COLOR)
+        choices.pack(fill="both", expand=True, padx=18, pady=0)
+        selected = {name.casefold() for name in self._parse_route_names(row["routes"].get())}
+        variables: list[tuple[str, tk.BooleanVar]] = []
+        for route in self._routes():
+            name = str(route.get("name", "")).strip()
+            variable = tk.BooleanVar(value=name.casefold() in selected)
+            variables.append((name, variable))
+            ctk.CTkCheckBox(choices, text=name, variable=variable).pack(anchor="w", padx=10, pady=7)
+        controls = ctk.CTkFrame(dialog, fg_color=CARD_BACKGROUND, border_width=1, border_color=BORDER_COLOR)
+        controls.pack(fill="x", padx=18, pady=(12, 18))
+
+        def apply_selection() -> None:
+            row["routes"].set("、".join(name for name, variable in variables if variable.get()))
+            dialog.destroy()
+
+        ctk.CTkButton(controls, text="取消", width=96, command=dialog.destroy, **secondary_button_style()).pack(side="right", padx=(8, 12), pady=12)
+        ctk.CTkButton(controls, text="套用", width=96, command=apply_selection).pack(side="right", pady=12)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        def present_dialog() -> None:
+            self.update_idletasks()
+            dialog.update_idletasks()
+            width = max(420, dialog.winfo_width())
+            height = max(460, dialog.winfo_height())
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - width) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 2)
+            dialog.geometry(f"{width}x{height}+{x}+{y}")
+            dialog.grab_set()
+            dialog.focus_force()
+
+        dialog.after(100, present_dialog)
+
+    def _add_schedule(self, initial: dict[str, Any] | None = None) -> None:
+        item = initial or {"name": f"排程 {len(self._schedule_rows) + 1}", "enabled": True, "routes": [], "cron": "0 9 * * 1-5", "message": ""}
+        card = ctk.CTkFrame(self.schedule_container)
+        card.pack(fill="x", padx=10, pady=5)
+        row: dict[str, Any] = {
+            "frame": card,
+            "enabled": tk.BooleanVar(value=bool(item.get("enabled", True))),
+            "name": tk.StringVar(value=str(item.get("name", ""))),
+            "routes": tk.StringVar(value=self._automation_routes(item.get("routes", []))),
+            "cron": tk.StringVar(value=str(item.get("cron", ""))),
+            "message": tk.StringVar(value=str(item.get("message", ""))),
+            "next": tk.StringVar(value=""),
+        }
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=10, pady=(7, 2))
+        ctk.CTkSwitch(top, text="啟用", variable=row["enabled"]).pack(side="left")
+        ctk.CTkEntry(top, textvariable=row["name"], width=220).pack(side="left", padx=8)
+        ctk.CTkButton(top, text="刪除", width=65, command=lambda: self._delete_automation_row(self._schedule_rows, row), **danger_button_style()).pack(side="right")
+        for label, key in (("目標路由", "routes"), ("Cron", "cron"), ("訊息", "message")):
+            self._labeled_entry(card, label, row[key])
+        ctk.CTkLabel(card, textvariable=row["next"], text_color=MUTED_TEXT_COLOR).pack(anchor="w", padx=120, pady=(0, 6))
+        row["cron"].trace_add("write", lambda *_args: self._update_schedule_preview(row))
+        self._update_schedule_preview(row)
+        self._schedule_rows.append(row)
+
+    @staticmethod
+    def _update_schedule_preview(row: dict[str, Any]) -> None:
+        try:
+            expression = row["cron"].get().strip()
+            if len(expression.split()) != 5:
+                raise ValueError
+            next_run = AutomationEngine.next_run(expression)
+            row["next"].set(f"下一次：{next_run.strftime('%Y-%m-%d %H:%M %z')}")
+        except Exception:
+            row["next"].set("下一次：Cron 格式無效")
+
+    @staticmethod
+    def _delete_automation_row(collection: list[dict[str, Any]], row: dict[str, Any]) -> None:
+        row["frame"].destroy()
+        collection.remove(row)
+
+    def _collect_automations(self) -> dict[str, Any]:
+        return {
+            "keyword_rules": [{"name": row["name"].get().strip(), "enabled": bool(row["enabled"].get()), "routes": self._parse_route_names(row["routes"].get()), "match": "exact" if row["match"].get() == "完全相符" else "contains", "keyword": row["keyword"].get().strip(), "response": row["response"].get().strip()} for row in self._keyword_rows],
+            "eew": {"dedupe_seconds": 60},
+            "schedules": [{"name": row["name"].get().strip(), "enabled": bool(row["enabled"].get()), "routes": self._parse_route_names(row["routes"].get()), "cron": row["cron"].get().strip(), "message": row["message"].get().strip()} for row in self._schedule_rows],
+        }
 
     def _build_logs(self, page: ctk.CTkFrame) -> None:
         self._title(page, "日誌", "僅顯示經敏感資訊遮蔽的近期程式紀錄")
@@ -548,8 +842,8 @@ class MeshBridgeWindow(ctk.CTk):
             values=list(LOG_LEVEL_TO_UI.values()),
             command=lambda _: self._reset_logs(),
         ).pack(side="left")
-        ctk.CTkButton(controls, text="清空畫面", command=self._clear_logs, width=100).pack(side="left", padx=8)
-        ctk.CTkButton(controls, text="開啟日誌資料夾", command=self._open_log_folder, width=130).pack(side="right")
+        ctk.CTkButton(controls, text="清空畫面", command=self._clear_logs, width=100, **secondary_button_style()).pack(side="left", padx=8)
+        ctk.CTkButton(controls, text="開啟日誌資料夾", command=self._open_log_folder, width=130, **secondary_button_style()).pack(side="right")
         self.log_text = ctk.CTkTextbox(page, state="disabled", wrap="none")
         self.log_text.pack(fill="both", expand=True, padx=24, pady=(0, 20))
 
@@ -561,24 +855,28 @@ class MeshBridgeWindow(ctk.CTk):
 
     def _refresh_runtime(self) -> None:
         snapshot = self.controller.snapshot()
-        running = self.controller.running
-        self.start_button.configure(state="disabled" if running or self._operation_running else "normal")
-        self.stop_button.configure(state="normal" if running and not self._operation_running else "disabled")
-        self.restart_button.configure(state="normal" if running and not self._operation_running else "disabled")
+        status = self.controller.service_status
+        self.start_button.configure(state="normal" if self.controller.can_start() else "disabled")
+        self.stop_button.configure(state="normal" if self.controller.can_stop() else "disabled")
+        self.restart_button.configure(state="normal" if self.controller.can_restart() else "disabled")
         if snapshot is None:
             self.sidebar_state.configure(text="橋接服務：尚未設定")
             for label in self.status_labels.values():
-                label.configure(text="尚未啟動")
+                label.configure(text="尚未啟動", text_color=MUTED_TEXT_COLOR)
         else:
             bridge = snapshot.get("bridge", {})
             bridge_status = translate_status(bridge.get("status", "stopped"))
-            self.sidebar_state.configure(text=f"橋接服務：{bridge_status}")
-            self.status_labels["bridge"].configure(text=bridge_status)
+            status_color = STATUS_COLORS.get(status, MUTED_TEXT_COLOR)
+            self.sidebar_state.configure(text=f"橋接服務：{bridge_status}", text_color=status_color)
+            self.status_labels["bridge"].configure(text=bridge_status, text_color=status_color)
             routes = snapshot.get("routes", {})
             connected = sum(1 for route in routes.values() if route.get("mqtt_status") == "connected")
-            self.status_labels["mqtt"].configure(text=f"{connected}/{len(routes)} 已連線")
-            self.status_labels["telegram"].configure(text=translate_status(snapshot.get("telegram", {}).get("status", "disabled")))
-            self.status_labels["discord"].configure(text=translate_status(snapshot.get("discord", {}).get("status", "disabled")))
+            mqtt_status = "connected" if routes and connected == len(routes) else "connecting" if routes else "disabled"
+            telegram_status = str(snapshot.get("telegram", {}).get("status", "disabled"))
+            discord_status = str(snapshot.get("discord", {}).get("status", "disabled"))
+            self.status_labels["mqtt"].configure(text=f"{connected}/{len(routes)} 已連線", text_color=STATUS_COLORS.get(mqtt_status, MUTED_TEXT_COLOR))
+            self.status_labels["telegram"].configure(text=translate_status(telegram_status), text_color=STATUS_COLORS.get(telegram_status, MUTED_TEXT_COLOR))
+            self.status_labels["discord"].configure(text=translate_status(discord_status), text_color=STATUS_COLORS.get(discord_status, MUTED_TEXT_COLOR))
             route_lines = [
                 f"{route.get('name', route_id)}\n  連線狀態：{translate_status(route.get('mqtt_status'))}\n  伺服器（Broker）：{route.get('broker', '')}"
                 for route_id, route in routes.items()
@@ -614,6 +912,10 @@ class MeshBridgeWindow(ctk.CTk):
                 self.request_exit()
             elif kind == "activate":
                 self._show_window_on_ui(str(payload))
+            elif kind == "external_command":
+                parts = str(payload).split("|", 2)
+                if len(parts) == 3 and parts[0] == "eew":
+                    self.controller.send_eew_async(parts[1], parts[2])
             elif kind == "request_exit":
                 self.request_exit()
             elif kind == "shutdown_complete":
@@ -632,18 +934,21 @@ class MeshBridgeWindow(ctk.CTk):
                 self._operation_running = bool(payload.get("running"))
                 if self._operation_running:
                     self.operation_label.configure(text="正在處理…")
-                    for button in (self.validate_button, self.test_button, self.apply_button):
+                    self.automation_status.configure(text="正在儲存並套用設定…")
+                    for button in (self.validate_button, self.test_button, self.apply_button, self.automation_apply_button):
                         button.configure(state="disabled")
                 else:
-                    for button in (self.validate_button, self.test_button, self.apply_button):
+                    for button in (self.validate_button, self.test_button, self.apply_button, self.automation_apply_button):
                         button.configure(state="normal")
                     if payload.get("ok"):
                         text = payload.get("result") or "操作完成"
                         self.operation_label.configure(text=str(text))
                         self.settings_status.configure(text=str(text))
+                        self.automation_status.configure(text=str(text))
                     else:
                         error = payload.get("error", "未知錯誤")
                         self.operation_label.configure(text="操作失敗")
+                        self.automation_status.configure(text="儲存或套用失敗")
                         messagebox.showerror(
                             "MeshBridge 操作失敗",
                             friendly_config_error(error),
@@ -673,7 +978,11 @@ class MeshBridgeWindow(ctk.CTk):
             self.chat_history.see("end")
             self.chat_history.configure(state="disabled")
             self._last_message_id = int(result.get("latest_id", self._last_message_id))
-        self.chat_status.configure(text="橋接服務已啟動" if self.controller.running else "橋接服務尚未啟動")
+        service_status = self.controller.service_status
+        self.chat_status.configure(
+            text=f"橋接服務：{translate_status(service_status)}",
+            text_color=STATUS_COLORS.get(service_status, MUTED_TEXT_COLOR),
+        )
         self.after(800, self._refresh_chat)
 
     def _route_id_for_name(self, name: str) -> str | None:
@@ -760,8 +1069,9 @@ class MeshBridgeWindow(ctk.CTk):
             return
         self._route_index = max(0, min(index, len(routes) - 1))
         route = routes[self._route_index]
-        for key in ("enabled", "telegram_enabled", "discord_enabled"):
-            self._route_vars[key].set(bool(route.get(key, key != "discord_enabled")))
+        defaults = {"enabled": True, "telegram_enabled": True, "discord_enabled": False, "eew_enabled": False}
+        for key, default in defaults.items():
+            self._route_vars[key].set(bool(route.get(key, default)))
         for key in ("name", "channel_name", "channel_key", "target_chat_id", "topic_id", "discord_channel_id"):
             value = route.get(key, "")
             self._route_vars[key].set("" if value is None else str(value))
@@ -776,12 +1086,17 @@ class MeshBridgeWindow(ctk.CTk):
                 messagebox.showerror("路由設定", "路由名稱不可空白", parent=self)
             return False
         route = routes[self._route_index]
-        for key in ("enabled", "telegram_enabled", "discord_enabled"):
+        old_name = str(route.get("name", ""))
+        for key in ("enabled", "telegram_enabled", "discord_enabled", "eew_enabled"):
             route[key] = bool(self._route_vars[key].get())
         for key in ("name", "channel_name", "channel_key"):
             route[key] = self._route_vars[key].get().strip()
         for key in ("target_chat_id", "topic_id", "discord_channel_id"):
             route[key] = self._route_vars[key].get().strip() or None
+        if old_name and old_name.casefold() != name.casefold():
+            for row in (*self._keyword_rows, *self._schedule_rows):
+                selected = self._parse_route_names(row["routes"].get())
+                row["routes"].set("、".join(name if item.casefold() == old_name.casefold() else item for item in selected))
         self._rebuild_route_list()
         return True
 
@@ -792,7 +1107,7 @@ class MeshBridgeWindow(ctk.CTk):
             messagebox.showinfo("路由上限", f"最多只能建立 {MAX_ROUTES} 條路由。", parent=self)
             return
         template = copy.deepcopy(routes[-1] if routes else default_config_data()["routes"][0])
-        template.update(name=f"路由 {len(routes) + 1}", enabled=True)
+        template.update(name=f"路由 {len(routes) + 1}", enabled=True, eew_enabled=False)
         routes.append(template)
         self._route_index = len(routes) - 1
         self._load_route(self._route_index)
@@ -803,7 +1118,13 @@ class MeshBridgeWindow(ctk.CTk):
         if len(routes) <= 1:
             messagebox.showinfo("路由設定", "至少必須保留一條路由。", parent=self)
             return
+        deleted_name = str(routes[self._route_index].get("name", ""))
         routes.pop(self._route_index)
+        for row in (*self._keyword_rows, *self._schedule_rows):
+            selected = self._parse_route_names(row["routes"].get())
+            row["routes"].set("、".join(
+                item for item in selected if item.casefold() != deleted_name.casefold()
+            ))
         self._route_index = min(self._route_index, len(routes) - 1)
         self._load_route(self._route_index)
         self._rebuild_route_list()
@@ -829,7 +1150,7 @@ class MeshBridgeWindow(ctk.CTk):
         if not self._commit_route():
             raise ConfigError("請先完成目前路由設定")
         raw = copy.deepcopy(self.raw)
-        raw["config_version"] = 3
+        raw["config_version"] = CURRENT_CONFIG_VERSION
         raw["logging_level"] = UI_TO_LOG_LEVEL[self._settings_vars["logging_level"].get()]
         raw["appearance"] = {"theme": UI_TO_THEME.get(self.theme_var.get(), "system")}
         raw["bridge_ui"] = {"display_name": self._settings_vars["bridge_ui.display_name"].get().strip()}
@@ -857,6 +1178,7 @@ class MeshBridgeWindow(ctk.CTk):
             },
         }
         raw["routes"] = copy.deepcopy(self._routes())
+        raw["automations"] = self._collect_automations()
         return raw
 
     def _validate_form(self) -> bool:
